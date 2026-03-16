@@ -1,0 +1,37 @@
+{
+  "total_files": 15,
+  "ok_files": 9,
+  "bad_files": 6,
+  "reason_counts": {
+    "mean_jump(>0.15)": 6,
+    "wrist_jump(>0.25)": 4
+  },
+  "per_class_total": {
+    "Ba_Ngon": 1,
+    "Bon_Ngon": 1,
+    "Dau_L": 1,
+    "Giu_Len": 1,
+    "Nam": 1,
+    "Ngon_Cai_Len": 1,
+    "Ngon_Cai_Xuong": 1,
+    "OK": 1,
+    "Pinch": 1,
+    "Shaka": 1,
+    "Tro_Giu_Vuot": 1,
+    "Tro_Len": 1,
+    "Tro_Xuong": 1,
+    "V_Tro_Giua": 1,
+    "Xoe_Ban_Tay": 1
+  },
+  "per_class_ok": {
+    "Ba_Ngon": 1,
+    "Bon_Ngon": 1,
+    "Nam": 1,
+    "OK": 1,
+    "Shaka": 1,
+    "Tro_Giu_Vuot": 1,
+    "Tro_Len": 1,
+    "V_Tro_Giua": 1,
+    "Xoe_Ban_Tay": 1
+  }
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hand Gesture Capture</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel">
+        <h1>Hand Gesture Capture</h1>
+        <p>Use MediaPipe Hands to record sequences for ST-GCN training.</p>
+        <div class="controls">
+          <label>
+            Gesture label
+            <input id="labelInput" type="text" placeholder="e.g. swipe_left" />
+          </label>
+          <div class="buttons">
+            <button id="startBtn">Start Camera</button>
+            <button id="stopBtn" disabled>Stop Camera</button>
+          </div>
+          <div class="buttons">
+            <button id="recordBtn" disabled>Record</button>
+            <button id="saveBtn" disabled>Save JSON</button>
+          </div>
+          <div id="status" class="status">Idle</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="video-wrap">
+          <video id="inputVideo" playsinline></video>
+          <canvas id="outputCanvas"></canvas>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
