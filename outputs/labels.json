@@ -1,0 +1,21 @@
+{
+  "Ba_Ngon": 0,
+  "Bon_Ngon": 1,
+  "Dau_L": 2,
+  "Giu_Len": 3,
+  "Nam": 4,
+  "Ngon_Cai_Len": 5,
+  "Ngon_Cai_Xuong": 6,
+  "OK": 7,
+  "Pinch": 8,
+  "Shaka": 9,
+  "Tro_Giu_Vuot": 10,
+  "Tro_Len": 11,
+  "Tro_Xuong": 12,
+  "V_Tro_Giua": 13,
+  "Xoe_Ban_Tay": 14,
+  "fist": 15,
+  "open_hand": 16,
+  "peace": 17,
+  "vuot_trai": 18
+}
