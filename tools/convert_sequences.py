@@ -73,8 +73,18 @@ def normalize_frames(frames: np.ndarray) -> np.ndarray:
 
 # Hàm để thêm vận tốc vào các khung hình
 def add_velocity(frames: np.ndarray) -> np.ndarray:
+    """Add velocity (1st derivative) and acceleration (2nd derivative)"""
+    # frames: (T, V, C) - normalized coordinates
+    # velocity: difference between consecutive frames
     velocity = np.diff(frames, axis=0, prepend=frames[:1])
-    return np.concatenate([frames, velocity], axis=-1)
+    
+    # acceleration: difference of velocity (2nd derivative)
+    acceleration = np.diff(velocity, axis=0, prepend=velocity[:1])
+    
+    # Concatenate: [position, velocity, acceleration]
+    # Output shape: (T, V, C*3) e.g., (T, 21, 6) if input is (T, 21, 2)
+    result = np.concatenate([frames, velocity, acceleration], axis=-1)
+    return result
 
 # Hàm để đệm hoặc cắt các khung hình về độ dài mục tiêu
 def pad_or_trim(frames: np.ndarray, target_len: int) -> np.ndarray:

@@ -75,14 +75,18 @@ def ensure_task_model(path: Path) -> Path:
     return path
 
 
-def load_label_map(path: Path) -> Dict[str, int]:
+def load_label_map(path: Path) -> Dict[int, str]:
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        class_to_idx = json.load(f)
+    
+    # Invert the map to get idx_to_class
+    idx_to_class = {v: k for k, v in class_to_idx.items()}
+    return idx_to_class
 
 
-def index_to_label(label_map: Dict[str, int], num_classes: int) -> List[str]:
+def index_to_label(idx_to_class_map: Dict[int, str], num_classes: int) -> List[str]:
     labels = ["" for _ in range(num_classes)]
-    for label, idx in label_map.items():
+    for idx, label in idx_to_class_map.items():
         if 0 <= idx < num_classes:
             labels[idx] = label
     for i, label in enumerate(labels):

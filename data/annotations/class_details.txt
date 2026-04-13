@@ -1,0 +1,15 @@
+id	Label	Gesture	Instances		 
+1	D0X	Non-gesture		 
+2	B0A	Pointing with one finger		 
+3	B0B	Pointing with two fingers		 
+4	G01	Click with one finger	 
+5	G02	Click with two fingers	
+6	G03	Throw up	
+7	G04	Throw down	
+8	G05	Throw left	 
+9	G06	Throw right	 
+10	G07	Open twice	
+11	G08	Double click with one finger	 
+12	G09	Double click with two fingers	
+13	G10	Zoom in	
+14	G11	Zoom out	 

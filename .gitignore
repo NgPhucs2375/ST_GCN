@@ -1,0 +1,16 @@
+# Bỏ qua môi trường ảo
+.venv/
+__pycache__/
+
+# Bỏ qua toàn bộ dữ liệu nặng
+data/videos/
+data/raw_ipn*/
+data/raw/
+outputs/
+
+# Nếu file .npz quá 100MB thì cũng nên bỏ qua
+# data/processed/*.npz
+
+# Bỏ qua kết quả từ Kaggle
+final_model/outputs_kaggle/
+*.zip
