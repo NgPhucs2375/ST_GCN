@@ -17,3 +17,7 @@ echo.
 python tools/demo_webcam.py --model outputs/stgcn_best.pt --labels outputs/labels.json --camera-width 1280 --camera-height 960 --flip-camera
 
 pause
+.\venv\Scripts\python.exe tools/demo_webcam.py --model outputs/stgcn_best.pt --labels outputs/labels.json --camera-width 1280 --camera-height 960 --flip-camera
+.\venv\Scripts\python.exe tools/demo_webcam.py --model outputs/stgcn_best.pt --labels outputs/labels.json --camera-width 1280 --camera-height 960
+
+

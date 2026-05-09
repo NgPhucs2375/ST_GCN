@@ -14,3 +14,5 @@ outputs/
 # Bỏ qua kết quả từ Kaggle
 final_model/outputs_kaggle/
 *.zip
+
+data/processed/*.npz
