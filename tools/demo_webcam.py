@@ -111,6 +111,13 @@ def add_velocity(frames: np.ndarray) -> np.ndarray:
     return np.concatenate([frames, velocity], axis=-1)
 
 
+def add_acceleration(frames: np.ndarray) -> np.ndarray:
+    """Add acceleration (second derivative) to frames."""
+    velocity = np.diff(frames, axis=0, prepend=frames[:1])
+    acceleration = np.diff(velocity, axis=0, prepend=velocity[:1])
+    return np.concatenate([frames, velocity, acceleration], axis=-1)
+
+
 def infer_in_channels_from_state(state: Dict[str, torch.Tensor]) -> int:
     if "data_bn.weight" not in state:
         raise ValueError("Cannot infer in_channels: key 'data_bn.weight' is missing in checkpoint")
@@ -122,25 +129,40 @@ def infer_in_channels_from_state(state: Dict[str, torch.Tensor]) -> int:
     return bn_size // 21
 
 
-def infer_feature_config(in_channels: int) -> Tuple[bool, bool]:
+def infer_feature_config(in_channels: int) -> Tuple[bool, bool, bool]:
+    """Infer use_z, use_velocity, use_acceleration from in_channels."""
     if in_channels == 2:
-        return False, False
+        return False, False, False
     if in_channels == 3:
-        return True, False
+        return True, False, False
     if in_channels == 4:
-        return False, True
+        return False, True, False
     if in_channels == 6:
-        return True, True
+        return True, True, False
+    if in_channels == 9:
+        # 9 channels: (x,y,z) + velocity + acceleration
+        return True, True, True
     raise ValueError(
-        f"Unsupported in_channels={in_channels}. Use checkpoint trained with 2/3/4/6 channels."
+        f"Unsupported in_channels={in_channels}. Use checkpoint trained with 2/3/4/6/9 channels."
     )
 
 
-def feature_channels(use_z: bool, use_velocity: bool) -> int:
-    c = 3 if use_z else 2
-    if use_velocity:
-        c *= 2
-    return c
+def feature_channels(use_z: bool, use_velocity: bool, use_acceleration: bool = False) -> int:
+    """Calculate expected number of channels based on feature flags.
+    
+    If use_acceleration is True, it assumes we have position + velocity + acceleration.
+    If use_velocity is True (but not acceleration), we have position + velocity.
+    Otherwise, just position.
+    """
+    if use_acceleration:
+        # With acceleration: 3x the base (position, velocity, acceleration)
+        return (3 if use_z else 2) * 3
+    elif use_velocity:
+        # With velocity: 2x the base (position, velocity)
+        return (3 if use_z else 2) * 2
+    else:
+        # Just position
+        return 3 if use_z else 2
 
 
 def first_existing(paths: List[Path]) -> Optional[Path]:
@@ -228,24 +250,25 @@ def main() -> None:
     parser.add_argument("--labels", default="", help="Path to labels.json. If omitted, auto-detect best known path.")
     parser.add_argument("--task-model", default="tools/assets/hand_landmarker.task")
     parser.add_argument("--camera-id", type=int, default=0)
-    parser.add_argument("--camera-width", type=int, default=640)
-    parser.add_argument("--camera-height", type=int, default=480)
+    parser.add_argument("--camera-width", type=int, default=1280)
+    parser.add_argument("--camera-height", type=int, default=960)
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--length", type=int, default=30)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--det-conf", type=float, default=0.5)
-    parser.add_argument("--track-conf", type=float, default=0.5)
-    parser.add_argument("--ema-alpha", type=float, default=0.7, help="Prediction smoothing factor")
+    parser.add_argument("--track-conf", type=float, default=0.75)
+    parser.add_argument("--ema-alpha", type=float, default=0.5, help="Prediction smoothing factor")
     parser.add_argument(
         "--landmark-ema-alpha",
         type=float,
-        default=0.65,
+        default=0.5
+        ,
         help="Temporal smoothing for landmarks in [0,1). Higher value = more stable.",
     )
     parser.add_argument(
         "--max-hand-jump",
         type=float,
-        default=0.12,
+        default=0,
         help="Drop sudden landmark jumps (normalized XY units). Set <=0 to disable.",
     )
     parser.add_argument(
@@ -303,12 +326,13 @@ def main() -> None:
         state = state["state_dict"]
 
     in_channels = infer_in_channels_from_state(state)
-    inferred_use_z, inferred_use_velocity = infer_feature_config(in_channels)
+    inferred_use_z, inferred_use_velocity, inferred_use_acceleration = infer_feature_config(in_channels)
 
     use_z = inferred_use_z if args.use_z is None else args.use_z
     use_velocity = inferred_use_velocity if args.use_velocity is None else args.use_velocity
+    use_acceleration = inferred_use_acceleration
 
-    expected_channels = feature_channels(use_z, use_velocity)
+    expected_channels = feature_channels(use_z, use_velocity, use_acceleration)
     if expected_channels != in_channels:
         raise ValueError(
             f"Feature mismatch: checkpoint expects C={in_channels}, but current settings produce C={expected_channels}."
@@ -339,6 +363,8 @@ def main() -> None:
     dropped_jump_frames = 0
     fps_ema: Optional[float] = None
     prev_ts = time.perf_counter()
+    double_click_cooldown = 0
+    last_double_type = None
 
     print("Demo started.")
     print(f"Model: {model_path}")
@@ -358,7 +384,8 @@ def main() -> None:
             fps_inst = 1.0 / dt
             fps_ema = fps_inst if fps_ema is None else (0.9 * fps_ema + 0.1 * fps_inst)
 
-            # frame = cv2.flip(frame, 1)
+            
+            
             landmarks = detect_landmarks(detector, frame, use_tasks)
 
             if landmarks is not None:
@@ -395,7 +422,7 @@ def main() -> None:
                     (20, 52),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.55,
-                    (220, 220, 220),
+                    (0, 0, 0),
                     1,
                 )
 
@@ -404,7 +431,9 @@ def main() -> None:
                 if not use_z:
                     seq = seq[:, :, :2]
                 seq = normalize_frames(seq)
-                if use_velocity:
+                if use_acceleration:
+                    seq = add_acceleration(seq)
+                elif use_velocity:
                     seq = add_velocity(seq)
 
                 x = torch.from_numpy(seq).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)
@@ -422,15 +451,31 @@ def main() -> None:
                 top_label = labels[int(indices[0].item())]
                 top_conf = float(scores[0].item())
                 top_text = format_label(top_label, args.overlay_lang)
+
+
+                if top_label in ["G08", "G09"] and top_conf >= args.min_confidence:
+                    double_click_cooldown = 15
+                    last_double_type = top_label
+                
+
+                if double_click_cooldown > 0:
+                    if last_double_type == "G08" and top_label == "G01": 
+                        top_label = "B0A"
+                        top_text = format_label("B0A", args.overlay_lang)
+                    elif last_double_type == "G09" and top_label == "G02": 
+                        top_label = "B0B"
+                        top_text = format_label("B0B", args.overlay_lang)
+                    double_click_cooldown -= 1
+
                 if top_conf >= args.min_confidence:
                     display = f"{top_text} ({top_conf:.2f})"
                     color = (30, 230, 30)
                 else:
                     display = f"Khong chac ({top_conf:.2f})"
                     color = (40, 170, 250)
+                
                 y0 = 82 if args.show_fps else 60
                 cv2.putText(frame, display, (20, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
                 y = y0 + 30
                 for score, idx in zip(scores.tolist(), indices.tolist()):
                     label_text = format_label(labels[idx], args.overlay_lang)
@@ -440,7 +485,7 @@ def main() -> None:
                         (20, y),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
-                        (240, 240, 240),
+                        (0, 0, 0),
                         1,
                     )
                     y += 22
