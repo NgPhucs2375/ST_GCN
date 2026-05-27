@@ -61,3 +61,9 @@ outputs/
 # Bỏ qua kết quả từ Kaggle
 final_model/outputs_kaggle/
 *.zip
+
+train.npz
+train1.npz
+
+raw_ipn_merged_clean
+stgcn_best.pt 

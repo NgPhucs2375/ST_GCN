@@ -135,16 +135,16 @@ class STGCN(nn.Module):
         # Normalize across node dimension to stabilize input features.
         self.data_bn = nn.BatchNorm1d(in_channels * num_nodes)
         
-        # Increased capacity: 64→96, 128→192, 256→384
+        # Increased capacity: 64→64, 128→128, 256→256
         # This improves feature learning, especially for weak classes
-        self.layer1 = STGCNBlock(in_channels, 96, edge_index, num_nodes, dropout=dropout)
-        self.layer2 = STGCNBlock(96, 96, edge_index, num_nodes, dropout=dropout)
-        self.layer3 = STGCNBlock(96, 192, edge_index, num_nodes, stride=2, dropout=dropout)
-        self.layer4 = STGCNBlock(192, 384, edge_index, num_nodes, stride=2, dropout=dropout)
+        self.layer1 = STGCNBlock(in_channels, 64, edge_index, num_nodes, dropout=dropout)
+        self.layer2 = STGCNBlock(64, 64, edge_index, num_nodes, dropout=dropout)
+        self.layer3 = STGCNBlock(64, 128, edge_index, num_nodes, stride=2, dropout=dropout)
+        self.layer4 = STGCNBlock(128, 256, edge_index, num_nodes, stride=2, dropout=dropout)
         
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
-        self.fc = nn.Linear(384, num_classes)
+        self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (N, C, T, V)
