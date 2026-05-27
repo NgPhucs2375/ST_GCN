@@ -12,7 +12,19 @@ const statusEl = document.getElementById("status");
 let camera = null;
 let isRecording = false;
 let recordedFrames = [];
-let lastLandmarks = null;
+
+const QUALITY = {
+  maxHands: 1,
+  minDetConf: 0.7,
+  minTrackConf: 0.7,
+  landmarkEmaAlpha: 0.65,
+  maxMeanJump: 0.12,
+  maxConsecutiveMisses: 6,
+};
+
+let smoothedLandmarks = null;
+let missingCount = 0;
+let droppedFrames = 0;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -48,7 +60,29 @@ function drawLandmarks(landmarksList) {
 function pushFrame(landmarks) {
   const frame = landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
   recordedFrames.push(frame);
-  lastLandmarks = frame;
+}
+
+function smoothLandmarks(raw) {
+  if (!smoothedLandmarks) {
+    return raw.map((p) => ({ ...p }));
+  }
+  const alpha = Math.min(Math.max(QUALITY.landmarkEmaAlpha, 0), 0.99);
+  return raw.map((p, i) => ({
+    x: alpha * smoothedLandmarks[i].x + (1 - alpha) * p.x,
+    y: alpha * smoothedLandmarks[i].y + (1 - alpha) * p.y,
+    z: alpha * smoothedLandmarks[i].z + (1 - alpha) * p.z,
+  }));
+}
+
+function meanJump(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const dx = a[i].x - b[i].x;
+    const dy = a[i].y - b[i].y;
+    sum += Math.hypot(dx, dy);
+  }
+  return sum / a.length;
 }
 
 function downloadJson(data, filename) {
@@ -68,10 +102,10 @@ const hands = new Hands({
 });
 
 hands.setOptions({
-  maxNumHands: 2,
+  maxNumHands: QUALITY.maxHands,
   modelComplexity: 1,
-  minDetectionConfidence: 0.6,
-  minTrackingConfidence: 0.6,
+  minDetectionConfidence: QUALITY.minDetConf,
+  minTrackingConfidence: QUALITY.minTrackConf,
 });
 
 hands.onResults((results) => {
@@ -79,13 +113,36 @@ hands.onResults((results) => {
   canvas.height = video.videoHeight || 480;
 
   const landmarksList = results.multiHandLandmarks || [];
-  drawLandmarks(landmarksList);
-
   const primaryHand = landmarksList[0] || null;
-  if (isRecording && primaryHand) {
-    // Keep single-hand data format for ST-GCN training.
-    pushFrame(primaryHand);
-    setStatus(`Recording... frames: ${recordedFrames.length}`);
+
+  if (primaryHand) {
+    missingCount = 0;
+    const smoothed = smoothLandmarks(primaryHand);
+    if (smoothedLandmarks) {
+      // Drop unstable frames to reduce jump noise in saved sequences.
+      const jump = meanJump(smoothed, smoothedLandmarks);
+      if (jump > QUALITY.maxMeanJump) {
+        droppedFrames += 1;
+        drawLandmarks([smoothedLandmarks]);
+        return;
+      }
+    }
+    smoothedLandmarks = smoothed;
+    drawLandmarks([smoothed]);
+
+    if (isRecording) {
+      // Keep single-hand data format for ST-GCN training.
+      pushFrame(smoothed);
+      setStatus(
+        `Recording... frames: ${recordedFrames.length} | miss: ${missingCount} | drop: ${droppedFrames}`
+      );
+    }
+  } else {
+    missingCount += 1;
+    if (missingCount >= QUALITY.maxConsecutiveMisses) {
+      smoothedLandmarks = null;
+    }
+    drawLandmarks(landmarksList);
   }
 });
 
@@ -119,6 +176,8 @@ stopBtn.addEventListener("click", () => {
 recordBtn.addEventListener("click", () => {
   if (!isRecording) {
     recordedFrames = [];
+    droppedFrames = 0;
+    missingCount = 0;
     isRecording = true;
     recordBtn.textContent = "Stop";
     saveBtn.disabled = true;
