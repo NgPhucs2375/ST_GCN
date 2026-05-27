@@ -445,19 +445,27 @@ def main() -> None:
                     )
                     y += 22
 
-            cv2.imshow("ST-GCN Hand Gesture Demo", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-            if key == ord("c"):
-                frame_buffer.clear()
-                prob_ema = None
-                landmark_ema = None
-                missing_count = 0
+            try:
+                cv2.imshow("ST-GCN Hand Gesture Demo", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
+                if key == ord("c"):
+                    frame_buffer.clear()
+                    prob_ema = None
+                    landmark_ema = None
+                    missing_count = 0
+            except cv2.error as e:
+                print(f"OpenCV display error: {e}")
+                print("Running in headless mode. Press Ctrl+C to exit.")
+                time.sleep(0.03)
 
     finally:
         cap.release()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
         if hasattr(detector, "close"):
             detector.close()
 

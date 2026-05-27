@@ -1,3 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor and system files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large data / media — ignore raw inputs and videos
+data/raw_ipn*/
+raw_ipn*/
+raw_ipn*/
+data/raw_ipn_*/
+data/raw_ipn_full*/
+data/raw_ipn_full_clean/
+data/raw_ipn_merged*/
+raw_ipn_final_merged/
+raw_ipn_extracted_clean/
+data/processed/
+
+# Project videos and common media formats
+data/videos/
+videos/
+**/videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Optional: model weights, outputs and large artifacts
+weights/
+final_model/
+outputs_kaggle/
+outputs_*/
+tmp_eval_out.txt
 # Bỏ qua môi trường ảo
 .venv/
 __pycache__/

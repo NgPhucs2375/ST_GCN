@@ -1,18 +1,5 @@
 # MediaPipe Capture UI
 
-## Run
+Huong dan capture da duoc rut gon trong [docs/01_QUICKSTART.md](../docs/01_QUICKSTART.md).
 
-Serve the folder with any static server:
-
-```bat
-python -m http.server 8000
-```
-
-Open http://localhost:8000/web/
-
-## Output format
-
-Each saved file is a JSON with:
-
-- label: gesture name
-- frames: list of frames, each frame has 21 points (x, y, z)
+Neu can xem phan deployment, benchmark, va phan con thieu, doc them [docs/03_DEPLOYMENT_AND_OPTIMIZATION.md](../docs/03_DEPLOYMENT_AND_OPTIMIZATION.md).

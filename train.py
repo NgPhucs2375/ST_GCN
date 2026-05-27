@@ -269,6 +269,7 @@ def eval_epoch(model, loader, criterion, device, num_classes: int):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, help="Path to .npz file")
+    parser.add_argument("--channels", type=int, choices=[4, 6, 9], required=True, help="Expected input feature channels")
     parser.add_argument("--resume", default="", help="Path to a .pt checkpoint to resume from")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -281,9 +282,15 @@ def main() -> None:
     parser.add_argument("--weighted-sampler", action="store_true")
     parser.add_argument("--class-weighted-loss", action="store_true")
     parser.add_argument("--max-class-weight", type=float, default=4.0)
-    parser.add_argument("--scheduler", choices=["none", "cosine", "step"], default="none")
-    parser.add_argument("--step-size", type=int, default=10)
-    parser.add_argument("--gamma", type=float, default=0.5)
+    parser.add_argument("--scheduler", choices=["none", "plateau"], default="plateau")
+    parser.add_argument(
+        "--scheduler-monitor",
+        choices=["val_loss", "val_acc"],
+        default="val_loss",
+        help="Metric used by ReduceLROnPlateau",
+    )
+    parser.add_argument("--scheduler-factor", type=float, default=0.5)
+    parser.add_argument("--scheduler-patience", type=int, default=5)
     parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disable)")
     parser.add_argument("--seed", type=int, default=42)
 
@@ -303,6 +310,11 @@ def main() -> None:
     set_seed(args.seed)
 
     dataset = STGCNDataset(args.data)
+    actual_channels = int(dataset.sequences.shape[-1])
+    if actual_channels != args.channels:
+        raise ValueError(
+            f"Requested --channels {args.channels} does not match dataset channels {actual_channels}."
+        )
     train_set, val_set = split_dataset(
         dataset,
         args.val_ratio,
@@ -328,7 +340,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     edge_index = build_hand_edge_index()
     model = STGCN(
-        in_channels=dataset.sequences.shape[-1],
+        in_channels=args.channels,
         num_classes=len(dataset.label_to_index),
         edge_index=edge_index,
         dropout=args.dropout,
@@ -381,10 +393,14 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing, weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    if args.scheduler == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    elif args.scheduler == "step":
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+    if args.scheduler == "plateau":
+        scheduler_mode = "max" if args.scheduler_monitor == "val_acc" else "min"
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_mode,
+            factor=args.scheduler_factor,
+            patience=args.scheduler_patience,
+        )
     else:
         scheduler = None
 
@@ -444,7 +460,8 @@ def main() -> None:
         )
 
         if scheduler is not None:
-            scheduler.step()
+            scheduler_metric = val_acc if args.scheduler_monitor == "val_acc" else val_loss
+            scheduler.step(scheduler_metric)
 
         lr = optimizer.param_groups[0]["lr"]
 
@@ -458,7 +475,16 @@ def main() -> None:
         if val_acc > best_acc:
             best_acc = val_acc
             epochs_no_improve = 0
-            torch.save(model.state_dict(), output_dir / "stgcn_best.pt")
+            torch.save(
+                {
+                    "state_dict": model.state_dict(),
+                    "epoch": epoch,
+                    "val_acc": val_acc,
+                    "val_loss": val_loss,
+                    "channels": args.channels,
+                },
+                output_dir / "stgcn_best.pt",
+            )
             save_label_map(dataset.label_to_index, output_dir)
             # Save confusion matrix for the best validation accuracy.
             torch.save(confusion, output_dir / "confusion_matrix.pt")
@@ -469,7 +495,15 @@ def main() -> None:
                     print(f"Early stopping at epoch {epoch} (best acc {best_acc:.3f})")
                     break
 
-    torch.save(model.state_dict(), output_dir / "stgcn_last.pt")
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "epoch": args.epochs,
+            "channels": args.channels,
+            "best_val_acc": best_acc,
+        },
+        output_dir / "stgcn_last.pt",
+    )
 
 
 if __name__ == "__main__":
