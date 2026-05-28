@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ST-GCN Bộ Gán Phím Cử Chỉ</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@500;700&display=swap');
+
+  :root {
+    --bg: #030307;
+    --panel: #090911;
+    --panel-hover: #111122;
+    --border: #1d1d35;
+    --accent: #8b5cf6;
+    --accent-gradient: linear-gradient(135deg, #8b5cf6, #ec4899);
+    --cyan-gradient: linear-gradient(135deg, #06b6d4, #3b82f6);
+    --text: #f8fafc;
+    --muted: #64748b;
+    --success: #10b981;
+    --success-bg: rgba(16, 185, 129, 0.1);
+    --danger: #ef4444;
+    --danger-bg: rgba(239, 68, 68, 0.1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 1100px;
+  }
+
+  header {
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 2.2rem;
+    font-weight: 700;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.02em;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-top: 4px;
+  }
+
+  .drop-zone {
+    border: 2px dashed var(--border);
+    padding: 12px 20px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.01);
+    font-size: 0.8rem;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(139, 92, 246, 0.05);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .row {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .row:hover {
+    border-color: rgba(139, 92, 246, 0.4);
+    background: var(--panel-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 10px 20px -10px rgba(0,0,0,0.5);
+  }
+
+  .row.active {
+    border-color: #ec4899;
+    background: rgba(236, 72, 153, 0.03);
+    box-shadow: 0 0 20px -5px rgba(236, 72, 153, 0.2);
+  }
+
+  .row.has-key-row {
+    border-color: rgba(16, 185, 129, 0.2);
+  }
+
+  .badge {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 8px;
+    background: var(--border);
+    color: var(--text);
+    min-width: 54px;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .row:hover .badge {
+    background: var(--accent);
+    color: white;
+  }
+  .row.active .badge {
+    background: #ec4899;
+    color: white;
+  }
+  .row.has-key-row .badge {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+
+  .gesture-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #cbd5e1;
+    flex: 1;
+    line-height: 1.4;
+  }
+  .row.has-key-row .gesture-name {
+    color: var(--text);
+  }
+
+  .key-btn {
+    background: #020205;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 8px 14px;
+    min-width: 100px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .key-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .key-btn.listening {
+    background: var(--accent-gradient);
+    border-color: transparent;
+    color: white;
+    font-weight: 700;
+    animation: pulse 1.2s infinite;
+  }
+
+  .key-btn.has-key {
+    border-color: var(--success);
+    color: var(--success);
+    background: var(--success-bg);
+    font-weight: 700;
+  }
+
+  .clear-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1.2rem;
+    padding: 4px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+  }
+
+  .clear-btn:hover {
+    color: var(--danger);
+    background: var(--danger-bg);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(0.97); }
+  }
+
+  .footer-actions {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  .buttons {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+
+  .btn-save {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.95rem;
+    padding: 14px 32px;
+    border-radius: 12px;
+    border: none;
+    background: var(--accent-gradient);
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+  }
+
+  .btn-save:hover {
+    opacity: 0.95;
+    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+    transform: translateY(-1px);
+  }
+  .btn-save:active { transform: translateY(0); }
+
+  .btn-clear-all {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    padding: 14px 24px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-clear-all:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: var(--danger-bg);
+  }
+
+  .status {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0;
+    transform: translateX(-10px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .status.show {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .info-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .hint {
+    font-size: 0.8rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .hint span {
+    color: #ec4899;
+    font-weight: 600;
+    background: rgba(236, 72, 153, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+  }
+
+  .preview-section {
+    margin-top: 24px;
+    width: 100%;
+    display: none;
+  }
+  
+  .preview-title {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .saved-box {
+    background: #020205;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #a78bfa;
+    overflow-x: auto;
+    max-height: 200px;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div>
+      <h1>⚡ Bộ Gán Phím Cử Chỉ</h1>
+      <p class="subtitle">Cấu hình phím bấm giả lập cho mô hình Nhận Dạng Hành Vi ST-GCN</p>
+    </div>
+    
+    <div class="drop-zone" id="drop-zone">
+      <span>📂 Kéo thả file <b>gesture_config.json</b> cũ vào đây để nạp nhanh</span>
+      <input type="file" id="file-input" accept=".json" style="display:none">
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="footer-actions">
+    <div class="info-zone">
+      <div class="hint">Nhấp chuột vào ô phím ➔ Bấm nút bất kỳ trên bàn phím để gán</div>
+      <div class="hint">Nhấn <span>Esc</span> để hủy | Nhấn <span>Backspace</span> hoặc <span>Delete</span> để xóa phím</div>
+    </div>
+    
+    <div class="buttons">
+      <span class="status" id="status">🎉 Tải file cấu hình thành công!</span>
+      <button class="btn-clear-all" onclick="clearAll()">✕ Xóa tất cả</button>
+      <button class="btn-save" onclick="saveConfig()">💾 Tải xuống config</button>
+    </div>
+  </div>
+
+  <div class="preview-section" id="preview-section">
+    <div class="preview-title">Nội dung dữ liệu cấu hình JSON:</div>
+    <pre class="saved-box" id="saved-box"></pre>
+  </div>
+</div>
+
+<script>
+const GESTURES = [
+  { id: "D0X", name: "Không cử chỉ (Nghỉ)" },
+  { id: "B0A", name: "Chỉ 1 ngón tay" },
+  { id: "B0B", name: "Chỉ 2 ngón tay" },
+  { id: "G01", name: "Click 1 ngón" },
+  { id: "G02", name: "Click 2 ngón" },
+  { id: "G03", name: "Hất lên (Throw up)" },
+  { id: "G04", name: "Hất xuống (Throw down)" },
+  { id: "G05", name: "Hất trái (Throw left)" },
+  { id: "G06", name: "Hất phải (Throw right)" },
+  { id: "G07", name: "Mở 2 lần (Open twice)" },
+  { id: "G08", name: "Nhấp đúp 1 ngón" },
+  { id: "G09", name: "Nhấp đúp 2 ngón" },
+  { id: "G10", name: "Phóng to (Zoom in)" },
+  { id: "G11", name: "Thu nhỏ (Zoom out)" },
+];
+
+const KEY_MAP = {
+  " ": "space", "ArrowLeft": "left", "ArrowRight": "right",
+  "ArrowUp": "up", "ArrowDown": "down", "Enter": "enter",
+  "Backspace": "backspace", "Delete": "delete", "Escape": "esc",
+  "Tab": "tab", "Shift": "shift", "Control": "ctrl", "Alt": "alt",
+};
+
+function toPyKey(e) {
+  if (KEY_MAP[e.key]) return KEY_MAP[e.key];
+  if (e.key.length === 1) return e.key.toLowerCase();
+  return e.key.toLowerCase();
+}
+
+function displayKey(pyKey) {
+  if (!pyKey) return "— trống —";
+  const icons = { 
+    space: "Phím Cách", left: "🡨 Trái", right: "🡪 Phải", up: "🡩 Lên", down: "🡫 Xuống", 
+    enter: "Enter ↵", backspace: "Xóa ⌫", esc: "Esc", tab: "Tab ⇥", ctrl: "Ctrl", alt: "Alt", shift: "Shift"
+  };
+  return icons[pyKey] || pyKey.toUpperCase();
+}
+
+let mapping = {};
+let listeningId = null;
+
+GESTURES.forEach(g => { mapping[g.id] = ""; });
+
+function buildUI() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  
+  GESTURES.forEach(g => {
+    const hasKey = !!mapping[g.id];
+    
+    const row = document.createElement("div");
+    row.className = "row" + (hasKey ? " has-key-row" : "");
+    row.id = "row-" + g.id;
+
+    const badge = document.createElement("div");
+    badge.className = "badge";
+    badge.textContent = g.id;
+
+    const name = document.createElement("div");
+    name.className = "gesture-name";
+    name.textContent = g.name;
+
+    const btn = document.createElement("button");
+    btn.className = "key-btn" + (hasKey ? " has-key" : "");
+    btn.id = "btn-" + g.id;
+    btn.textContent = displayKey(mapping[g.id]);
+    btn.onclick = () => startListening(g.id);
+
+    const clr = document.createElement("button");
+    clr.className = "clear-btn";
+    clr.title = "Xóa";
+    clr.innerHTML = "&times;";
+    clr.onclick = (e) => { e.stopPropagation(); clearKey(g.id); };
+
+    row.appendChild(badge);
+    row.appendChild(name);
+    row.appendChild(btn);
+    row.appendChild(clr);
+    grid.appendChild(row);
+  });
+}
+
+function startListening(id) {
+  if (listeningId) stopListening();
+  listeningId = id;
+  const btn = document.getElementById("btn-" + id);
+  const row = document.getElementById("row-" + id);
+  btn.className = "key-btn listening";
+  btn.textContent = "🎧 Đang nhận phím...";
+  row.classList.add("active");
+}
+
+function stopListening() {
+  if (!listeningId) return;
+  const id = listeningId;
+  listeningId = null;
+  const btn = document.getElementById("btn-" + id);
+  const row = document.getElementById("row-" + id);
+  if(row) row.classList.remove("active");
+  
+  if(btn) {
+    const hasKey = !!mapping[id];
+    btn.className = "key-btn" + (hasKey ? " has-key" : "");
+    btn.textContent = displayKey(mapping[id]);
+    
+    const parentRow = btn.closest('.row');
+    if(hasKey) parentRow.classList.add('has-key-row');
+    else parentRow.classList.remove('has-key-row');
+  }
+}
+
+function clearKey(id) {
+  mapping[id] = "";
+  stopListening();
+  buildUI();
+}
+
+function clearAll() {
+  if(confirm("Bạn có chắc chắn muốn xóa toàn bộ phím đã gán không?")) {
+    GESTURES.forEach(g => { mapping[g.id] = ""; });
+    buildUI();
+    document.getElementById("preview-section").style.display = "none";
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!listeningId) return;
+  e.preventDefault();
+
+  if (e.key === "Escape") { 
+    stopListening(); 
+    return; 
+  }
+  if (e.key === "Backspace" || e.key === "Delete") {
+    mapping[listeningId] = "";
+    stopListening();
+    return;
+  }
+
+  mapping[listeningId] = toPyKey(e);
+  stopListening();
+});
+
+function saveConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "gesture_config.json";
+  a.click();
+  URL.revokeObjectURL(url);
+
+  document.getElementById("preview-section").style.display = "block";
+  const box = document.getElementById("saved-box");
+  box.textContent = json;
+
+  const st = document.getElementById("status");
+  st.classList.add("show");
+  setTimeout(() => st.classList.remove("show"), 3000);
+}
+
+const dropZone = document.getElementById('drop-zone');
+
+dropZone.onclick = () => document.getElementById('file-input').click();
+
+document.getElementById('file-input').onchange = function(e) {
+  if (e.target.files.length > 0) handleJsonFile(e.target.files[0]);
+};
+
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
+dropZone.ons=(e) => e.preventDefault();
+dropZone.ondragover = () => dropZone.classList.add('dragover');
+dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+dropZone.ondrop = (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) handleJsonFile(e.dataTransfer.files[0]);
+};
+
+function handleJsonFile(file) {
+  if (!file.name.endsWith('.json')) {
+    alert('Vui lòng chọn file định dạng cấu hình .json!');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = JSON.parse(e.target.result);
+      GESTURES.forEach(g => {
+        mapping[g.id] = data[g.id] !== undefined ? data[g.id] : "";
+      });
+      buildUI();
+    } catch(err) {
+      alert('File cấu hình JSON bị lỗi cấu trúc dữ liệu!');
+    }
+  };
+  reader.readAsText(file);
+}
+
+fetch("gesture_config.json")
+  .then(r => r.json())
+  .then(data => { 
+    GESTURES.forEach(g => { mapping[g.id] = data[g.id] || ""; });
+    buildUI(); 
+  })
+  .catch(() => { buildUI(); });
+</script>
+</body>
+</html>
