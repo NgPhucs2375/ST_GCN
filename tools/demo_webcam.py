@@ -9,6 +9,7 @@ import json
 import sys
 import time
 import urllib.request
+import subprocess
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -60,7 +61,7 @@ C_GREEN     = (74, 222, 128)     # xanh lá (đã gán)
 #  GESTURE CONFIG
 # ════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "gesture_config.json"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "Gan_nut" / "gesture_config.json"
 
 def load_gesture_config(path: Path) -> Dict[str, str]:
     if not path.exists():
@@ -80,8 +81,37 @@ def send_key(key: str) -> None:
         return
     try:
         pyautogui.press(key)
+        # Small console log to help debug focus/permission issues
+        print(f"→ send_key: pressed '{key}'")
     except Exception as e:
         print(f"⚠️  Không gửi được phím '{key}': {e}")
+
+
+def send_action(action: str) -> None:
+    """Perform an action defined in gesture_config.
+
+    - If action starts with "run:", the rest is executed as a shell command (non-blocking).
+    - Otherwise, treat it as a key for pyautogui.press().
+    """
+    if not action:
+        return
+    action = action.strip()
+    # run: command -> launch external app/command
+    if action.lower().startswith("run:"):
+        cmd = action[4:].strip()
+        if not cmd:
+            print("⚠️  'run:' mapping requires a command after the prefix")
+            return
+        try:
+            print(f"→ send_action: launching command: {cmd}")
+            # Use shell=True on Windows cmd.exe so users can pass .exe, .lnk, or file paths
+            subprocess.Popen(cmd, shell=True)
+        except Exception as e:
+            print(f"⚠️  Không thể chạy lệnh '{cmd}': {e}")
+        return
+
+    # otherwise, try to send as a key press
+    send_key(action)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -354,11 +384,15 @@ def main() -> None:
                     mapped_key = gesture_config.get(top_label, "")
                     if mapped_key:
                         if top_label != last_sent_label or send_cooldown <= 0:
-                            send_key(mapped_key)
+                            send_action(mapped_key)
                             last_sent_label = top_label
                             send_cooldown   = args.send_cooldown
-                            # Hiển thị phím vừa gõ lên góc màn hình camera
-                            cv2.putText(frame, f">> TOGGLE KEY: [{mapped_key.upper()}]",
+                            # Hiển thị hành động vừa thực hiện lên góc màn hình camera
+                            disp = mapped_key
+                            # Shorten display for run: commands
+                            if mapped_key.lower().startswith("run:"):
+                                disp = f"run:{mapped_key[4:].strip()}"
+                            cv2.putText(frame, f">> ACTION: [{disp}]",
                                         (20, 90), cv2.FONT_HERSHEY_SIMPLEX,
                                         0.65, C_CYAN, 2)
                 else:
