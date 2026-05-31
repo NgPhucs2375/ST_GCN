@@ -88,30 +88,45 @@ def send_key(key: str) -> None:
 
 
 def send_action(action: str) -> None:
-    """Perform an action defined in gesture_config.
-
-    - If action starts with "run:", the rest is executed as a shell command (non-blocking).
-    - Otherwise, treat it as a key for pyautogui.press().
-    """
     if not action:
         return
     action = action.strip()
-    # run: command -> launch external app/command
+    print(f"→ send_action: {action}")
+
     if action.lower().startswith("run:"):
         cmd = action[4:].strip()
-        if not cmd:
-            print("⚠️  'run:' mapping requires a command after the prefix")
-            return
-        try:
-            print(f"→ send_action: launching command: {cmd}")
-            # Use shell=True on Windows cmd.exe so users can pass .exe, .lnk, or file paths
+        if cmd:
             subprocess.Popen(cmd, shell=True)
-        except Exception as e:
-            print(f"⚠️  Không thể chạy lệnh '{cmd}': {e}")
         return
 
-    # otherwise, try to send as a key press
-    send_key(action)
+    if action == "hotkey:ctrl+plus":
+        pyautogui.hotkey('ctrl', 'shift', '=')
+        return
+
+    if action == "hotkey:ctrl+minus":
+        pyautogui.hotkey('ctrl', '-')
+        return
+
+    if action.lower().startswith("hotkey:"):
+        keys = action[7:].split("+")
+        pyautogui.hotkey(*keys)
+        return
+
+    if action == "mouse:left":
+        pyautogui.click(button="left")
+    elif action == "mouse:right":
+        pyautogui.click(button="right")
+    elif action == "mouse:middle":
+        pyautogui.click(button="middle")
+    elif action == "mouse:double":
+        pyautogui.doubleClick()
+    elif action == "mouse:scroll_up":
+        pyautogui.scroll(3)
+    elif action == "mouse:scroll_down":
+        pyautogui.scroll(-3)
+    else:
+        pyautogui.press(action)
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
