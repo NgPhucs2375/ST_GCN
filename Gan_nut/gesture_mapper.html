@@ -295,9 +295,11 @@
       <div class="hint">Hỗ trợ: <span>Phím đơn</span> <span>Ctrl+C/V/Z...</span> <span>Click chuột</span> <span>Scroll</span> <span>Tùy chỉnh</span></div>
     </div>
     <div class="buttons">
-      <span class="status" id="status">✅ Đã lưu thành công!</span>
-      <button class="btn-clear-all" onclick="clearAll()">✕ Xóa tất cả</button>
-      <button class="btn-save" onclick="saveConfig()">💾 Tải xuống config</button>
+        <span class="status" id="status">✅ Đã lưu thành công!</span>
+        <button class="btn-clear-all" onclick="clearAll()">✕ Xóa tất cả</button>
+        <button class="btn-save" onclick="previewConfig()">📄 Xem JSON</button>
+        <button class="btn-save" onclick="copyConfig()">📋 Copy JSON</button>
+        <button class="btn-save" onclick="downloadConfig()">💾 Tải JSON</button>
     </div>
   </div>
 
@@ -322,7 +324,17 @@
       <label>✏️ Tùy chỉnh:</label>
       <input class="custom-input" id="custom-input"
              placeholder="vd: hotkey:ctrl+shift+t  hoặc  run:notepad.exe">
-      <button class="btn-apply" onclick="applyCustom()">Áp dụng</button>
+      <div style="display:flex;gap:8px;align-items:center;margin-left:8px">
+        <label style="font-size:0.8rem;color:#9ca3af">Stable</label>
+        <input id="opt-stable" type="number" min="0" placeholder="3" style="width:66px;padding:6px;border-radius:6px;background:#020205;border:1px solid #1d1d35;color:#a78bfa">
+        <label style="font-size:0.8rem;color:#9ca3af">Still</label>
+        <input id="opt-still" type="checkbox">
+        <label style="font-size:0.8rem;color:#9ca3af">Mutex</label>
+        <input id="opt-mutex" type="text" placeholder="group name" style="width:120px;padding:6px;border-radius:6px;background:#020205;border:1px solid #1d1d35;color:#a78bfa">
+    <label style="font-size:0.8rem;color:#9ca3af">Follow hold</label>
+    <input id="opt-follow-hold" type="checkbox">
+        <button class="btn-apply" onclick="applyCustom()">Áp dụng</button>
+      </div>
     </div>
   </div>
 </div>
@@ -348,6 +360,8 @@ const GESTURES = [
 // ── Nhóm action ──────────────────────────────────────────────────────────
 const ACTION_GROUPS = {
   "🖱️ Chuột": [
+    { val:"mouse:follow_on",    label:"Follow ON",     cls:"mouse-opt" },
+    { val:"mouse:follow_off",   label:"Follow OFF",    cls:"mouse-opt" },
     { val:"mouse:left",        label:"Click Trái",      cls:"mouse-opt" },
     { val:"mouse:right",       label:"Click Phải",      cls:"mouse-opt" },
     { val:"mouse:middle",      label:"Click Giữa",      cls:"mouse-opt" },
@@ -514,7 +528,17 @@ function selectAction(val) {
   if (val === "__clear__") {
     mapping[currentGid] = "";
   } else {
-    mapping[currentGid] = val;
+    // attach modal options if present
+    const stable = document.getElementById('opt-stable').value.trim();
+    const still = document.getElementById('opt-still').checked;
+    const mutex = document.getElementById('opt-mutex').value.trim();
+  const follow_hold = document.getElementById('opt-follow-hold').checked;
+    let out = val;
+    if (stable) out += `|stable_count=${stable}`;
+    if (still)  out += `|still`;
+    if (mutex)  out += `|mutex=${mutex}`;
+  if (follow_hold) out += `|follow_hold`;
+    mapping[currentGid] = out;
   }
   closeModal();
   buildUI();
@@ -524,7 +548,16 @@ function applyCustom() {
   const v = document.getElementById("custom-input").value.trim();
   if (!v) return;
   if (!currentGid) return;
-  mapping[currentGid] = v;
+  const stable = document.getElementById('opt-stable').value.trim();
+  const still = document.getElementById('opt-still').checked;
+  const mutex = document.getElementById('opt-mutex').value.trim();
+  const follow_hold = document.getElementById('opt-follow-hold').checked;
+  let out = v;
+  if (stable) out += `|stable_count=${stable}`;
+  if (still)  out += `|still`;
+  if (mutex)  out += `|mutex=${mutex}`;
+  if (follow_hold) out += `|follow_hold`;
+  mapping[currentGid] = out;
   closeModal();
   buildUI();
 }
@@ -539,19 +572,38 @@ function clearAll() {
 }
 
 function saveConfig() {
-  const json = JSON.stringify(mapping, null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href = url; a.download = "gesture_config.json"; a.click();
-  URL.revokeObjectURL(url);
+  // old behavior preserved if you want to explicitly download
+  previewConfig();
+}
 
+function previewConfig() {
+  const json = JSON.stringify(mapping, null, 2);
   document.getElementById("preview-section").style.display = "block";
   document.getElementById("saved-box").textContent = json;
+}
 
-  const st = document.getElementById("status");
-  st.classList.add("show");
-  setTimeout(() => st.classList.remove("show"), 3000);
+function copyConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+  navigator.clipboard.writeText(json).then(() => {
+    const st = document.getElementById("status");
+    st.classList.add("show");
+    setTimeout(() => st.classList.remove("show"), 1500);
+  });
+}
+
+function downloadConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'gesture_config.json';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 100);
 }
 
 // ── Drag & drop JSON ─────────────────────────────────────────────────────
