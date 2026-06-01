@@ -353,10 +353,10 @@ def main() -> None:
     parser.add_argument("--config",      default="", help="Path to gesture_config.json")
     parser.add_argument("--task-model",  default="tools/assets/hand_landmarker.task")
     parser.add_argument("--camera-id",   type=int,   default=0)
-    parser.add_argument("--camera-width",type=int,   default=640)
-    parser.add_argument("--camera-height",type=int,  default=480)
-    parser.add_argument("--camera-fps",  type=int,   default=30)
-    parser.add_argument("--length",      type=int,   default=30)
+    parser.add_argument("--camera-width",type=int,   default=640) #chiều rộng camera
+    parser.add_argument("--camera-height",type=int,  default=480) #chiều cao camera
+    parser.add_argument("--camera-fps",  type=int,   default=60) #FPS
+    parser.add_argument("--length",      type=int,   default=20) #chinh frame 
     parser.add_argument("--device",      default="auto", choices=["auto","cpu","cuda"])
     parser.add_argument("--det-conf",    type=float, default=0.6)
     parser.add_argument("--track-conf",  type=float, default=0.35)
@@ -386,6 +386,18 @@ def main() -> None:
     parser.add_argument("--overlay-lang", choices=["vi","code","both"], default="vi")
     parser.add_argument("--use-z",       action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use-velocity",action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use-knn", action="store_true",
+                        help="Use KNN-based matching instead of ST-GCN model")
+    parser.add_argument("--knn-threshold", type=float, default=5.0,
+                        help="Distance threshold for KNN match (lower = stricter). Default 5.0")
+    parser.add_argument("--knn-k", type=int, default=3,
+                        help="Number of neighbors for KNN voting. Default 3")
+    parser.add_argument("--template-file", default="data/gesture_templates.json",
+                        help="Path to gesture templates JSON. Default data/gesture_templates.json")
+    parser.add_argument("--skip-frames", type=int, default=0,
+                        help="Skip N frames between inference runs (0 = every frame). Useful for 60+ FPS on slower GPUs")
+    parser.add_argument("--optimize-240p", action="store_true",
+                        help="Downscale input to 240p for faster inference (for weak GPUs). Improves FPS but may reduce accuracy")
     args = parser.parse_args()
 
     # ── Tìm file model & labels ──────────────────────────────────────────────
@@ -431,6 +443,25 @@ def main() -> None:
     model.load_state_dict(state, strict=True)
     model.to(device).eval()
 
+    # ── Initialize KNN matcher if --use-knn flag set ──────────────────────────
+    knn_matcher = None
+    use_knn = False
+    if args.use_knn:
+        try:
+            from tools.knn_matcher import KNNGestureMatcher
+            template_path = Path(args.template_file)
+            if not template_path.exists():
+                print(f"⚠️  Template file not found: {template_path}")
+                print(f"   Please run: python tools/calibrate_gestures.py")
+                print(f"   Falling back to ST-GCN model...")
+            else:
+                knn_matcher = KNNGestureMatcher(template_path, k=args.knn_k)
+                use_knn = True
+                print(f"✅ KNN matcher initialized with threshold={args.knn_threshold}, k={args.knn_k}")
+        except Exception as e:
+            print(f"❌ Failed to load KNN matcher: {e}")
+            print(f"   Falling back to ST-GCN model...")
+
     detector = create_detector(Path(args.task_model), args.det_conf, args.track_conf)
 
     cap = cv2.VideoCapture(args.camera_id)
@@ -457,7 +488,7 @@ def main() -> None:
     # early high-confidence buffer for faster triggers
     early_history = _dq(maxlen=args.early_frames)
 
-    def perform_mapped_action(raw_mapping: str, seq: np.ndarray, now: float, frame_idx: int = 0):
+    def perform_mapped_action(raw_mapping: str, seq: np.ndarray, now: float, frame_idx: int = 0, is_instant: bool = False):
         """Handle mapping options and perform action accordingly.
 
         raw_mapping format: base_action[|opt1|opt2=val|...]
@@ -480,13 +511,15 @@ def main() -> None:
         eff_stable = int(opts.get('stable_count', args.stable_count))
         # check label stability using last entries of label_history
         lh = list(label_history)
-        if eff_stable > 0 and len(lh) < eff_stable:
+        # If caller requested instant, bypass the minimum-length check to allow immediate action
+        if eff_stable > 0 and not is_instant and len(lh) < eff_stable:
             return False
         stable_label = True
         if eff_stable > 0:
             tail = lh[-eff_stable:]
             stable_label = all(l == top_label for l in tail)
-        if not stable_label:
+        # If not instant and not stable, reject
+        if not is_instant and not stable_label:
             return False
 
         # wrist still requirement
@@ -544,11 +577,18 @@ def main() -> None:
     print("🎮 Hệ thống đang chạy cử chỉ... Nhấn Q trong cửa sổ camera để thoát")
 
     try:
+        inference_frame = 0  # Counter for inference skipping
         while True:
             ok, frame = cap.read()
             if not ok: break
 
             frame_idx += 1  # Increment frame counter
+
+            # ── Fast input preprocessing for 60+ FPS ────────────────────────
+            if args.optimize_240p:
+                # Downscale to 240p for faster detection
+                frame = cv2.resize(frame, (426, 240), interpolation=cv2.INTER_LINEAR)
+                # Will be upscaled back for display
 
             # ── Blur detection ───────────────────────────────────────────────
             if is_frame_blurry(frame, BLUR_THRESHOLD):
@@ -567,7 +607,14 @@ def main() -> None:
             fps_ema = (1/dt) if fps_ema is None else (0.9*fps_ema + 0.1/dt)
 
             # ── Landmark detection ───────────────────────────────────────────
-            landmarks = detect_landmarks(detector, frame)
+            # Optional frame skipping for higher FPS (use interpolation for buffering)
+            should_detect = (args.skip_frames == 0) or (frame_idx % (args.skip_frames + 1) == 1)
+            
+            if should_detect:
+                landmarks = detect_landmarks(detector, frame)
+            else:
+                landmarks = None  # Skip detection, reuse previous landmark_ema
+            
             if landmarks is not None:
                 missing_count = 0
                 current = landmarks_to_array(landmarks)
@@ -599,21 +646,30 @@ def main() -> None:
             if len(frame_buffer) >= args.min_action_frames:
                 # Use available frames (can be shorter than args.length for responsiveness)
                 seq = np.stack(list(frame_buffer), axis=0)
-                if not use_z: seq = seq[:, :, :2]
-                seq = normalize_frames(seq)
-                if use_acceleration: seq = add_acceleration(seq)
-                elif use_velocity:   seq = add_velocity(seq)
+                
+                if use_knn and knn_matcher is not None and landmark_ema is not None:
+                    # ── KNN-based matching ───────────────────────────────────
+                    # For KNN: normalize single frame (latest landmark)
+                    lm_norm = normalize_frames(np.array([landmark_ema]))[0]  # (21, 3) or (21, 2)
+                    top_label, top_conf = knn_matcher.match(lm_norm, threshold=args.knn_threshold)
+                else:
+                    # ── ST-GCN model inference ────────────────────────────────
+                    if not use_z: seq = seq[:, :, :2]
+                    seq = normalize_frames(seq)
+                    if use_acceleration: seq = add_acceleration(seq)
+                    elif use_velocity:   seq = add_velocity(seq)
 
-                x = torch.from_numpy(seq).float().unsqueeze(0).permute(0,3,1,2).to(device)
-                with torch.no_grad():
-                    probs = torch.softmax(model(x), dim=1).squeeze(0).cpu()
+                    x = torch.from_numpy(seq).float().unsqueeze(0).permute(0,3,1,2).to(device)
+                    with torch.no_grad():
+                        probs = torch.softmax(model(x), dim=1).squeeze(0).cpu()
 
-                prob_ema = probs if prob_ema is None else (
-                    args.ema_alpha * prob_ema + (1.0 - args.ema_alpha) * probs)
+                    prob_ema = probs if prob_ema is None else (
+                        args.ema_alpha * prob_ema + (1.0 - args.ema_alpha) * probs)
 
-                scores, indices = torch.topk(prob_ema, min(args.topk, prob_ema.numel()))
-                top_label = labels[int(indices[0].item())]
-                top_conf  = float(scores[0].item())
+                    scores, indices = torch.topk(prob_ema, min(args.topk, prob_ema.numel()))
+                    top_label = labels[int(indices[0].item())]
+                    top_conf  = float(scores[0].item())
+                
                 top_text  = format_label(top_label, args.overlay_lang)
 
                 if top_conf >= args.min_confidence:
@@ -705,7 +761,7 @@ def main() -> None:
                         elif top_label != last_sent_label or send_cooldown <= 0:
                             performed = False
                             try:
-                                performed = perform_mapped_action(mapped_key, seq, now, frame_idx)
+                                performed = perform_mapped_action(mapped_key, seq, now, frame_idx, is_instant=is_instant)
                             except Exception:
                                 performed = False
                             if performed:
