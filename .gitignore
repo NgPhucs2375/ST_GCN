@@ -15,4 +15,4 @@ outputs/
 final_model/outputs_kaggle/
 *.zip
 
-data/processed/*.npz
+data/processed/*.npzcontext_du_an.txt 
