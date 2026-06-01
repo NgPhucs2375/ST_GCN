@@ -698,6 +698,9 @@ def main() -> None:
     last_action_ts = 0.0
     frame_idx = 0  # Track frame number for blur detection and toggle debounce
     # label stability history (keep larger buffer so per-gesture stable_count can be higher)
+    # 📌 PATCH: Biến lưu trạng thái Click siêu tốc
+    PINCH_CLICKED = False
+    LAST_PINCH_TS = 0.0
     from collections import deque as _dq
     # label history sized based on stable_count and early_frames (avoid waiting for a large fixed buffer)
     label_history = _dq(maxlen=max(args.stable_count, args.early_frames, 8))
@@ -844,6 +847,35 @@ def main() -> None:
 
                 landmark_filtered = raw_landmarks
                 frame_buffer.append(landmark_filtered)
+                # ==============================================================
+                # ⚡ PATCH: HYBRID CLICK TỐC ĐỘ CAO (QUA MẶT ST-GCN)
+                # ==============================================================
+                if landmark_filtered is not None:
+                    # Điểm số 4 là đầu ngón cái, điểm số 8 là đầu ngón trỏ
+                    thumb_tip = landmark_filtered[4][:2] 
+                    index_tip = landmark_filtered[8][:2]
+                    
+                    # Tính khoảng cách Euclidean giữa 2 ngón
+                    pinch_dist = float(np.linalg.norm(thumb_tip - index_tip))
+                    
+                    # Nếu khoảng cách < 0.04 (Hai ngón chạm nhau)
+                    if pinch_dist < 0.04:
+                        if not PINCH_CLICKED and (now_ts - LAST_PINCH_TS > 0.3): # Cooldown 0.3s
+                            print("⚡ BẮT CLICK SIÊU TỐC TỪ KHỚP XƯƠNG!")
+                            
+                            # Chạy click chuột khác luồng để không làm giật camera
+                            threading.Thread(target=lambda: pyautogui.click(button='left'), daemon=True).start()
+                            
+                            PINCH_CLICKED = True
+                            LAST_PINCH_TS = now_ts
+                            
+                            # Hiển thị UI
+                            cv2.putText(frame, ">> ACTION: [INSTANT CLICK]", (20, 130), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+                    else:
+                        # Thả tay ra thì reset lại trạng thái
+                        PINCH_CLICKED = False
+                # ==============================================================
 
                 if args.roi_enable:
                     roi_bbox = compute_hand_bbox(landmark_filtered, frame_w, frame_h,
@@ -1024,6 +1056,7 @@ def main() -> None:
                 else:
                     last_sent_label = None
                     # reset label history when no stable detection
+                    MOUSE_FOLLOW_ENABLED = False
                     try:
                         label_history.clear()
                     except Exception:
