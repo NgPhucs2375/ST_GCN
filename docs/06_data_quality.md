@@ -1,49 +1,58 @@
-# 06 — Data quality (lọc dữ liệu trước khi train)
+# 06 — Data quality
 
-Mục tiêu của data quality là:
-- tránh train trên sample bị lỗi tracking
-- cân bằng số lượng sample giữa các lớp
-- giảm nhầm lẫn (nhìn qua confusion matrix)
+Mục tiêu của bước này là tránh đưa vào train những sample bị lỗi tracking, sequence quá ngắn, bị duplicate, hoặc lệch phân phối quá mạnh giữa các lớp.
 
-## Tool trong repo
+## Script trong repo
 
-Script: [tools/data_quality.py](../tools/data_quality.py)
+File chính: [tools/data_quality.py](../tools/data_quality.py)
 
-Tool này quét `data/raw/*.json` và tạo:
-- `outputs/data_quality_report.csv`: thống kê từng file
-- `outputs/data_quality_summary.json`: tổng hợp theo lý do lỗi + theo lớp
-- (tuỳ chọn) copy file OK sang folder sạch
+Script quét thư mục JSON và tạo:
 
-## Chạy cơ bản
+- `outputs/data_quality_report.csv`.
+- `outputs/data_quality_summary.json`.
+- `--copy-ok-to` để copy các file đạt sang folder clean.
+
+## Cách chạy
 
 ```bat
 python tools/data_quality.py --input data/raw
-```
-
-## Copy các file đạt sang thư mục clean
-
-```bat
 python tools/data_quality.py --input data/raw --copy-ok-to data/raw_clean
 ```
 
-## Các rule (heuristic) mặc định
+## Rule mặc định
 
-- `--min-frames 10`: loại sequence quá ngắn
-- `--expected-landmarks 21`: mỗi frame phải đủ 21 điểm
-- `--tol-xy 0.05`: cho phép x/y hơi ngoài [0,1]
-- `--max-wrist-jump 0.25`: loại tracking bị nhảy mạnh ở cổ tay
-- `--max-mean-jump 0.15`: loại tracking bị nhảy mạnh trung bình
-- `--dedup-decimals 3`: phát hiện duplicate bằng hash trên tọa độ đã làm tròn
+- `--min-frames 10`: loại sequence quá ngắn.
+- `--max-frames 0`: không giới hạn trên nếu để 0.
+- `--expected-landmarks 21`: mỗi frame phải có đủ 21 điểm.
+- `--tol-xy 0.05`: chấp nhận x/y hơi ngoài [0, 1].
+- `--max-wrist-jump 0.25`: loại tracking bị nhảy mạnh ở cổ tay.
+- `--max-mean-jump 0.15`: loại tracking bị nhảy mạnh trung bình toàn tay.
+- `--dedup-decimals 3`: phát hiện duplicate bằng hash trên tọa độ đã làm tròn.
 
-Các ngưỡng này là gợi ý ban đầu. Bạn nên xem report rồi chỉnh lại cho phù hợp.
+## Ý nghĩa report
 
-## Cách dùng kết hợp với train
+`data_quality_report.csv` cho từng file:
 
-Workflow đề xuất:
-1) Capture JSON → `data/raw/`
-2) Chạy data quality → copy OK sang `data/raw_clean/`
-3) Convert `data/raw_clean/` → `data/processed/train.npz`
-4) Train ST-GCN
+- tên file.
+- label.
+- số frame.
+- trạng thái OK/bad.
+- danh sách lý do fail.
+
+`data_quality_summary.json` cho tổng quan:
+
+- số file OK.
+- số file bad.
+- đếm theo từng lý do fail.
+- `per_class_total` và `per_class_ok`.
+
+## Workflow khuyến nghị
+
+1. Capture JSON vào `data/raw/` hoặc một thư mục raw tương đương.
+2. Chạy data quality.
+3. Copy file OK sang `data/raw_clean/`.
+4. Convert từ folder clean sang NPZ.
+5. Train model.
 
 Ví dụ:
 
@@ -53,10 +62,8 @@ python tools/convert_sequences.py --input data/raw_clean --output data/processed
 python train.py --data data/processed/train.npz --out outputs
 ```
 
-## Cân bằng lớp
+## Cách đọc để cải thiện dữ liệu
 
-Trong `outputs/data_quality_summary.json` có 2 thống kê:
-- `per_class_total`: số file mỗi lớp trong raw
-- `per_class_ok`: số file đạt sau lọc
-
-Nếu có lớp ít hơn hẳn, bạn nên thu thập thêm lớp đó (hoặc giảm lớp quá nhiều).
+- Nếu `bad_files` nhiều, thường là lỗi capture hoặc landmark không ổn định.
+- Nếu một class ít mẫu hơn hẳn, cần thu thêm dữ liệu cho class đó.
+- Nếu duplicate nhiều, cần ghi lại sequence đa dạng hơn thay vì chụp lặp.

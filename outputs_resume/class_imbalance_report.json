@@ -1,0 +1,65 @@
+{
+  "source_file": "data\\processed\\train_merged_t60_accel.npz",
+  "total_samples": 898,
+  "num_classes": 14,
+  "thresholds": {
+    "weak": 50,
+    "warning": [
+      50,
+      69
+    ]
+  },
+  "weak_classes": [
+    {
+      "name": "G04",
+      "count": 22
+    },
+    {
+      "name": "G05",
+      "count": 43
+    },
+    {
+      "name": "G06",
+      "count": 46
+    }
+  ],
+  "warning_classes": [
+    {
+      "name": "G03",
+      "count": 53
+    },
+    {
+      "name": "G09",
+      "count": 63
+    },
+    {
+      "name": "G01",
+      "count": 64
+    },
+    {
+      "name": "G08",
+      "count": 64
+    },
+    {
+      "name": "B0B",
+      "count": 67
+    }
+  ],
+  "all_classes_count": {
+    "G04": 22,
+    "G05": 43,
+    "G06": 46,
+    "G03": 53,
+    "G09": 63,
+    "G01": 64,
+    "G08": 64,
+    "B0B": 67,
+    "G02": 70,
+    "G07": 72,
+    "B0A": 76,
+    "G11": 82,
+    "G10": 83,
+    "D0X": 93
+  },
+  "timestamp": "2026-05-17T13:11:09.450261"
+}
