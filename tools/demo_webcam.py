@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.request
 import subprocess
+import threading
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -87,31 +88,98 @@ def send_key(key: str) -> None:
         print(f"⚠️  Không gửi được phím '{key}': {e}")
 
 
-def send_action(action: str) -> None:
-    """Perform an action defined in gesture_config.
-
-    - If action starts with "run:", the rest is executed as a shell command (non-blocking).
-    - Otherwise, treat it as a key for pyautogui.press().
-    """
+def send_action(action: str, frame_idx: int = 0) -> None:
     if not action:
         return
     action = action.strip()
-    # run: command -> launch external app/command
-    if action.lower().startswith("run:"):
-        cmd = action[4:].strip()
-        if not cmd:
-            print("⚠️  'run:' mapping requires a command after the prefix")
-            return
+    print(f"→ send_action: {action}")
+    global MOUSE_FOLLOW_ENABLED, MOUSE_POS_EMA
+
+    # support repeat: and instant: prefixes
+    if action.lower().startswith("repeat:"):
         try:
-            print(f"→ send_action: launching command: {cmd}")
-            # Use shell=True on Windows cmd.exe so users can pass .exe, .lnk, or file paths
-            subprocess.Popen(cmd, shell=True)
-        except Exception as e:
-            print(f"⚠️  Không thể chạy lệnh '{cmd}': {e}")
+            rest = action[7:]
+            n_str, cmd = rest.split(":", 1)
+            n = int(n_str)
+            def runner():
+                for _ in range(n):
+                    send_action(cmd, frame_idx)
+                    time.sleep(0.08)
+            threading.Thread(target=runner, daemon=True).start()
+        except Exception:
+            pass
         return
 
-    # otherwise, try to send as a key press
-    send_key(action)
+    # instant: prefix - caller can bypass debounce/stability
+    instant = False
+    if action.lower().startswith("instant:"):
+        instant = True
+        action = action[8:]
+
+    # toggle mouse follow mode (with debounce)
+    if action == "mouse:follow_on":
+        toggle_mouse_follow(True, frame_idx)
+        return
+    if action == "mouse:follow_off":
+        toggle_mouse_follow(False, frame_idx)
+        return
+
+    # type text
+    if action.lower().startswith("type:"):
+        text = action[5:]
+        try:
+            pyautogui.typewrite(text)
+            print(f"→ typed: {text}")
+        except Exception as e:
+            print(f"⚠️ type failed: {e}")
+        return
+
+    if action.lower().startswith("run:"):
+        cmd = action[4:].strip()
+        if cmd:
+            subprocess.Popen(cmd, shell=True)
+        return
+
+    if action == "hotkey:ctrl+plus":
+        pyautogui.hotkey('ctrl', 'shift', '=')
+        return
+
+    if action == "hotkey:ctrl+minus":
+        pyautogui.hotkey('ctrl', '-')
+        return
+
+    if action.lower().startswith("hotkey:"):
+        keys = action[7:].split("+")
+        pyautogui.hotkey(*keys)
+        return
+
+    if action == "mouse:left":
+        pyautogui.click(button="left")
+    elif action == "mouse:right":
+        pyautogui.click(button="right")
+    elif action == "mouse:middle":
+        pyautogui.click(button="middle")
+    elif action == "mouse:double":
+        pyautogui.doubleClick()
+    elif action == "mouse:scroll_up":
+        pyautogui.scroll(3)
+    elif action == "mouse:scroll_down":
+        pyautogui.scroll(-3)
+    else:
+        pyautogui.press(action)
+
+
+# Global state for mouse follow mode
+MOUSE_FOLLOW_ENABLED = False
+MOUSE_POS_EMA = None
+# Mutex groups last-used timestamps
+MUTEX_LAST = {}
+# Motion prediction for mouse follow
+MOTION_HISTORY = deque(maxlen=5)  # Track fingertip positions for velocity estimation
+BLUR_THRESHOLD = 100.0  # Laplacian variance threshold for blur detection
+FOLLOW_TOGGLE_FRAME = -999  # Track when follow was last toggled to debounce
+FOLLOW_TOGGLE_COOLDOWN = 10  # Frames to wait before accepting new toggle
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -217,6 +285,64 @@ def draw_landmarks(frame: np.ndarray, landmarks) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  BLUR DETECTION & MOTION PREDICTION HELPERS
+# ════════════════════════════════════════════════════════════════════════════
+
+def is_frame_blurry(frame: np.ndarray, threshold: float = BLUR_THRESHOLD) -> bool:
+    """Check if frame is blurry using Laplacian variance."""
+    if frame is None or frame.size == 0:
+        return True
+    try:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        return laplacian_var < threshold
+    except Exception:
+        return False
+
+def predict_fingertip_position(current_pos: Tuple[float, float], factor: float = 0.3) -> Tuple[int, int]:
+    """Predict next fingertip position based on motion history."""
+    if len(MOTION_HISTORY) < 2:
+        return tuple(map(int, current_pos))
+    
+    # Compute velocity from last 2 positions
+    positions = list(MOTION_HISTORY)
+    prev_pos = np.array(positions[-2], dtype=float)
+    last_pos = np.array(positions[-1], dtype=float)
+    velocity = last_pos - prev_pos
+    
+    # Predict future position
+    predicted = np.array(current_pos, dtype=float) + velocity * factor
+    
+    # Clamp to screen bounds
+    screen_w, screen_h = pyautogui.size()
+    predicted[0] = np.clip(predicted[0], 0, screen_w - 1)
+    predicted[1] = np.clip(predicted[1], 0, screen_h - 1)
+    
+    return tuple(predicted.astype(int))
+
+def toggle_mouse_follow(enable: bool, frame_idx: int, force: bool = False) -> bool:
+    """Toggle mouse follow with debounce to prevent rapid on/off flickering.
+    
+    Returns True if toggle was accepted, False if still in cooldown.
+    """
+    global MOUSE_FOLLOW_ENABLED, FOLLOW_TOGGLE_FRAME, MOTION_HISTORY
+    
+    if not force and (frame_idx - FOLLOW_TOGGLE_FRAME) < FOLLOW_TOGGLE_COOLDOWN:
+        return False  # Still in cooldown, ignore
+    
+    MOUSE_FOLLOW_ENABLED = enable
+    FOLLOW_TOGGLE_FRAME = frame_idx
+    MOTION_HISTORY.clear()  # Reset motion history when toggling
+    
+    if enable:
+        print(f"[follow_toggle] ON @ frame {frame_idx} (debounced)")
+    else:
+        print(f"[follow_toggle] OFF @ frame {frame_idx} (debounced)")
+    
+    return True
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -242,6 +368,20 @@ def main() -> None:
     parser.add_argument("--min-confidence", type=float, default=0.35)
     parser.add_argument("--send-cooldown",  type=int,   default=15,
                         help="Số frame chờ giữa 2 lần gửi phím (default 15 ~ 0.5s)")
+    parser.add_argument("--stable-count", type=int, default=3,
+                        help="Số lần cùng 1 label phải xuất hiện liên tiếp trước khi thực hiện action (giảm false positives)")
+    parser.add_argument("--action-delay",   type=float, default=0.4,
+                        help="Số giây tối thiểu giữa 2 action thực sự (debounce) - prevents spurious sequential actions")
+    parser.add_argument("--stability-threshold", type=float, default=0.03,
+                        help="Max allowed wrist movement (normalized) during sequence to consider landmarks stable")
+    parser.add_argument("--mouse-follow-smooth", type=float, default=0.6,
+                        help="EMA alpha for smoothing mouse movement (0..1), higher = smoother")
+    parser.add_argument("--min-action-frames", type=int, default=8,
+                        help="Minimum number of frames buffered before attempting an action (for responsiveness). Default 8")
+    parser.add_argument("--early-conf", type=float, default=0.85,
+                        help="High-confidence threshold to allow early triggering when reached (0..1). Default 0.85")
+    parser.add_argument("--early-frames", type=int, default=2,
+                        help="Number of consecutive high-confidence frames required for early trigger. Default 2")
     parser.add_argument("--show-fps",    action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--overlay-lang", choices=["vi","code","both"], default="vi")
     parser.add_argument("--use-z",       action=argparse.BooleanOptionalAction, default=None)
@@ -308,6 +448,97 @@ def main() -> None:
     # Biến gửi phím
     last_sent_label = None
     send_cooldown   = 0
+    last_action_ts = 0.0
+    frame_idx = 0  # Track frame number for blur detection and toggle debounce
+    # label stability history (keep larger buffer so per-gesture stable_count can be higher)
+    from collections import deque as _dq
+    # label history sized based on stable_count and early_frames (avoid waiting for a large fixed buffer)
+    label_history = _dq(maxlen=max(args.stable_count, args.early_frames, 8))
+    # early high-confidence buffer for faster triggers
+    early_history = _dq(maxlen=args.early_frames)
+
+    def perform_mapped_action(raw_mapping: str, seq: np.ndarray, now: float, frame_idx: int = 0):
+        """Handle mapping options and perform action accordingly.
+
+        raw_mapping format: base_action[|opt1|opt2=val|...]
+        Supported opts:
+          - still : require tighter wrist stability before action
+          - hold=<seconds> : for mouse clicks, hold mouse down for given seconds
+          - stable_count=<N> : override stable_count for this gesture
+        """
+        parts = raw_mapping.split("|") if raw_mapping else [""]
+        base = parts[0]
+        opts = {}
+        for p in parts[1:]:
+            if '=' in p:
+                k, v = p.split('=', 1)
+                opts[k.strip()] = v.strip()
+            else:
+                opts[p.strip()] = True
+
+        # compute effective stable count
+        eff_stable = int(opts.get('stable_count', args.stable_count))
+        # check label stability using last entries of label_history
+        lh = list(label_history)
+        if eff_stable > 0 and len(lh) < eff_stable:
+            return False
+        stable_label = True
+        if eff_stable > 0:
+            tail = lh[-eff_stable:]
+            stable_label = all(l == top_label for l in tail)
+        if not stable_label:
+            return False
+
+        # wrist still requirement
+        if 'still' in opts:
+            try:
+                seq_wrist = seq[:, 0:1, :2]
+                disp = np.linalg.norm(seq_wrist - seq_wrist[0:1], axis=-1)
+                max_disp = float(np.max(disp))
+                if max_disp > (args.stability_threshold * 0.5):
+                    return False
+            except Exception:
+                pass
+
+        # hold option for mouse clicks
+        hold = float(opts.get('hold', 0.0)) if 'hold' in opts else 0.0
+
+        # mutex handling: ensure group isn't recently used
+        mutex = opts.get('mutex', None)
+        if mutex:
+            last = MUTEX_LAST.get(mutex, 0.0)
+            if now - last < 0.6:
+                return False
+            # reserve it
+            MUTEX_LAST[mutex] = now
+
+        # perform action (support base being mouse:left etc.)
+        if base.startswith('mouse:') and hold > 0.0:
+            # mouseDown/Up with hold in background
+            def click_hold():
+                try:
+                    btn = base.split(':',1)[1]
+                    if btn == 'left':
+                        pyautogui.mouseDown(button='left')
+                        time.sleep(hold)
+                        pyautogui.mouseUp(button='left')
+                    elif btn == 'right':
+                        pyautogui.mouseDown(button='right')
+                        time.sleep(hold)
+                        pyautogui.mouseUp(button='right')
+                except Exception:
+                    pass
+            threading.Thread(target=click_hold, daemon=True).start()
+            return True
+
+        # otherwise fallback to normal send_action (may be hotkey/run/type/mouse ops)
+        send_action(base, frame_idx)
+        return True
+
+    # mouse follow state
+    global MOUSE_FOLLOW_ENABLED, MOUSE_POS_EMA
+    MOUSE_FOLLOW_ENABLED = False
+    MOUSE_POS_EMA = None
 
     print(f"✅ Model: {model_path} | Channels: {in_channels} | Device: {device}")
     print("🎮 Hệ thống đang chạy cử chỉ... Nhấn Q trong cửa sổ camera để thoát")
@@ -316,6 +547,18 @@ def main() -> None:
         while True:
             ok, frame = cap.read()
             if not ok: break
+
+            frame_idx += 1  # Increment frame counter
+
+            # ── Blur detection ───────────────────────────────────────────────
+            if is_frame_blurry(frame, BLUR_THRESHOLD):
+                cv2.putText(frame, "⚠️ Frame blurry (skip inference)",
+                            (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                cv2.imshow("ST-GCN Hand Gesture Demo", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == ord('Q'):
+                    break
+                continue  # Skip this frame
 
             # FPS
             now_ts = time.perf_counter()
@@ -353,7 +596,8 @@ def main() -> None:
 
             # ── Inference ────────────────────────────────────────────────────
             top_label, top_conf = "D0X", 0.0
-            if len(frame_buffer) == args.length:
+            if len(frame_buffer) >= args.min_action_frames:
+                # Use available frames (can be shorter than args.length for responsiveness)
                 seq = np.stack(list(frame_buffer), axis=0)
                 if not use_z: seq = seq[:, :, :2]
                 seq = normalize_frames(seq)
@@ -379,27 +623,144 @@ def main() -> None:
                 cv2.putText(frame, display, (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-                # ── Gửi phím dựa trên file JSON ──────────────────────────────
+                # ── Gửi phím dựa trên file JSON (yêu cầu độ ổn định label) ─────
                 if top_conf >= args.min_confidence and top_label != "D0X":
-                    mapped_key = gesture_config.get(top_label, "")
-                    if mapped_key:
-                        if top_label != last_sent_label or send_cooldown <= 0:
-                            send_action(mapped_key)
-                            last_sent_label = top_label
-                            send_cooldown   = args.send_cooldown
-                            # Hiển thị hành động vừa thực hiện lên góc màn hình camera
-                            disp = mapped_key
-                            # Shorten display for run: commands
-                            if mapped_key.lower().startswith("run:"):
-                                disp = f"run:{mapped_key[4:].strip()}"
-                            cv2.putText(frame, f">> ACTION: [{disp}]",
-                                        (20, 90), cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.65, C_CYAN, 2)
+                    raw_mapping = gesture_config.get(top_label, "")
+                    mapped_key = raw_mapping
+                    # If mapping requests follow_hold, enable follow while this gesture is active
+                    try:
+                        if raw_mapping and ("follow_hold" in raw_mapping or "follow=hold" in raw_mapping):
+                            # enable follow only when label is stable (or early trigger)
+                            # we'll set MOUSE_FOLLOW_ENABLED below after computing stable/early
+                            follow_hold_requested = True
+                        else:
+                            follow_hold_requested = False
+                    except Exception:
+                        follow_hold_requested = False
+                    # detect instant prefix (bypass debounce/stability)
+                    is_instant = False
+                    if mapped_key and mapped_key.lower().startswith("instant:"):
+                        is_instant = True
+                        mapped_key = mapped_key[8:]
+                    # track label history
+                    try:
+                        label_history.append(top_label)
+                    except Exception:
+                        pass
+
+                    # early high-confidence path
+                    early_trigger = False
+                    try:
+                        if top_conf >= args.early_conf:
+                            early_history.append(top_label)
+                        else:
+                            early_history.clear()
+                        if len(early_history) == early_history.maxlen and all(l == top_label for l in early_history):
+                            early_trigger = True
+                    except Exception:
+                        early_trigger = False
+
+                    # check last N entries for stability (N = args.stable_count)
+                    lh = list(label_history)
+                    tail = lh[-args.stable_count:] if args.stable_count > 0 else lh
+                    stable_label = (len(tail) == args.stable_count and all(l == top_label for l in tail))
+
+                    if not stable_label:
+                        # show waiting overlay with progress towards stable_count
+                        prog = len([l for l in tail if l == top_label])
+                        cv2.putText(frame, f"Waiting stable ({prog}/{args.stable_count})...",
+                                    (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200,200,80), 2)
+
+                    # If this mapping is follow_hold, enable/disable follow based on stability
+                    if follow_hold_requested:
+                        if stable_label or early_trigger or is_instant:
+                            MOUSE_FOLLOW_ENABLED = True
+                            cv2.putText(frame, f"MOUSE FOLLOW (hold)",
+                                        (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_CYAN, 2)
+                        else:
+                            MOUSE_FOLLOW_ENABLED = False
+
+                    if mapped_key and (stable_label or is_instant):
+                        # Check wrist stability over the buffered frames
+                        stable = True
+                        try:
+                            seq_wrist = seq[:, 0:1, :2]  # frames x 1 x 2
+                            # compute max displacement across frames
+                            disp = np.linalg.norm(seq_wrist - seq_wrist[0:1], axis=-1)
+                            max_disp = float(np.max(disp))
+                            # relax stability threshold slightly for early triggers
+                            thr = args.stability_threshold * (1.5 if early_trigger else 1.0)
+                            if max_disp > thr:
+                                stable = False
+                        except Exception:
+                            stable = True
+
+                        # Debounce by time as well
+                        now = time.perf_counter()
+                        if not stable and not is_instant:
+                            # skip spurious action when hand moved
+                            pass
+                        elif not is_instant and now - last_action_ts < args.action_delay:
+                            pass
+                        elif top_label != last_sent_label or send_cooldown <= 0:
+                            performed = False
+                            try:
+                                performed = perform_mapped_action(mapped_key, seq, now, frame_idx)
+                            except Exception:
+                                performed = False
+                            if performed:
+                                last_sent_label = top_label
+                                send_cooldown   = args.send_cooldown
+                                last_action_ts  = now
+                                # Hiển thị hành động vừa thực hiện lên góc màn hình camera
+                                disp = mapped_key
+                                # Shorten display for run: commands
+                                if mapped_key.lower().startswith("run:"):
+                                    disp = f"run:{mapped_key[4:].strip()}"
+                                cv2.putText(frame, f">> ACTION: [{disp}]",
+                                            (20, 90), cv2.FONT_HERSHEY_SIMPLEX,
+                                            0.65, C_CYAN, 2)
                 else:
                     last_sent_label = None
+                    # reset label history when no stable detection
+                    try:
+                        label_history.clear()
+                    except Exception:
+                        pass
 
                 if send_cooldown > 0:
                     send_cooldown -= 1
+
+                # Mouse follow: if enabled, move mouse to index fingertip (landmark idx 8)
+                if MOUSE_FOLLOW_ENABLED and len(frame_buffer) >= args.min_action_frames and landmark_ema is not None:
+                    try:
+                        # use the latest landmarks (landmark_ema or current)
+                        lm = landmark_ema if landmark_ema is not None else current
+                        idx8 = lm[8]  # x,y
+                        # idx8 coords are normalized (0..1) relative to image
+                        fx, fy = float(idx8[0]), float(idx8[1])
+                        # map to screen coordinates
+                        screen_w, screen_h = pyautogui.size()
+                        sx = int(fx * screen_w)
+                        sy = int(fy * screen_h)
+                        
+                        # Add current position to motion history for prediction
+                        MOTION_HISTORY.append((sx, sy))
+                        
+                        # Predict next position based on velocity
+                        predicted_sx, predicted_sy = predict_fingertip_position((sx, sy), factor=0.3)
+                        
+                        # smooth with EMA
+                        if MOUSE_POS_EMA is None:
+                            MOUSE_POS_EMA = np.array([predicted_sx, predicted_sy], dtype=float)
+                        else:
+                            alpha = float(np.clip(args.mouse_follow_smooth, 0.0, 0.99))
+                            MOUSE_POS_EMA = alpha * MOUSE_POS_EMA + (1.0 - alpha) * np.array([predicted_sx, predicted_sy], dtype=float)
+                        # move mouse (non-blocking)
+                        tx, ty = int(MOUSE_POS_EMA[0]), int(MOUSE_POS_EMA[1])
+                        pyautogui.moveTo(tx, ty)
+                    except Exception:
+                        pass
 
             cv2.imshow("ST-GCN Hand Gesture Demo", frame)
 
