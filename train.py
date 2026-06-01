@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -269,7 +270,7 @@ def eval_epoch(model, loader, criterion, device, num_classes: int):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, help="Path to .npz file")
-    parser.add_argument("--channels", type=int, choices=[4, 6, 9], required=True, help="Expected input feature channels")
+    parser.add_argument("--channels", type=int, choices=[4, 6, 9], default=4, help="Expected input feature channels")
     parser.add_argument("--resume", default="", help="Path to a .pt checkpoint to resume from")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -309,12 +310,25 @@ def main() -> None:
 
     set_seed(args.seed)
 
+    # =========================================================================
+    # KIỂM TRA GPU - CẢNH BÁO NẾU CHẠY BẰNG CPU
+    # =========================================================================
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("\n" + "="*55)
+    if device.type == 'cuda':
+        print(f"🚀 THÀNH CÔNG: Đang dùng GPU -> {torch.cuda.get_device_name(0)}")
+    else:
+        print(f"❌ BÁO ĐỘNG ĐỎ: Không tìm thấy GPU! Đang chạy bằng CPU.")
+        print(f"Hãy check lại xem cài thư viện có làm hỏng PyTorch không nhé!")
+    print("="*55 + "\n")
+
     dataset = STGCNDataset(args.data)
+    
+    # Auto-detect channels instead of breaking if it doesn't match default
     actual_channels = int(dataset.sequences.shape[-1])
-    if actual_channels != args.channels:
-        raise ValueError(
-            f"Requested --channels {args.channels} does not match dataset channels {actual_channels}."
-        )
+    args.channels = actual_channels
+    print(f"Dataset có số kênh channels là: {actual_channels}")
+
     train_set, val_set = split_dataset(
         dataset,
         args.val_ratio,
@@ -337,7 +351,6 @@ def main() -> None:
     print(f"Train class counts: {train_counts}")
     print(f"Val class counts:   {val_counts}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     edge_index = build_hand_edge_index()
     model = STGCN(
         in_channels=args.channels,
@@ -371,14 +384,27 @@ def main() -> None:
         drop_frames=args.aug_drop_frames,
     )
     train_sampler = make_weighted_sampler(train_labels) if args.weighted_sampler else None
+    
+    # =========================================================================
+    # TỐI ƯU HÓA DATALOADER (FIX LỖI NGHẼN CỔ CHAI CPU)
+    # =========================================================================
+    num_workers = min(4, os.cpu_count() or 1)
+    
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=train_sampler is None,
         sampler=train_sampler,
         collate_fn=collate_fn,
+        num_workers=num_workers, # Chia việc cho các nhân CPU
+        pin_memory=True          # Tăng tốc độ chuyển data từ RAM sang VRAM (GPU)
     )
-    val_loader = DataLoader(val_set, batch_size=args.batch_size)
+    val_loader = DataLoader(
+        val_set, 
+        batch_size=args.batch_size,
+        num_workers=num_workers,
+        pin_memory=True
+    )
 
     class_weights = None
     if args.class_weighted_loss:
