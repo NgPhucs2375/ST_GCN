@@ -12,6 +12,7 @@ import urllib.request
 import subprocess
 import threading
 from collections import deque
+from math import pi
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -35,6 +36,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.stgcn import STGCN, build_hand_edge_index
+from gesture_calibrator import GestureCalibrator
+from calibration_ui import CalibrationUI
 
 TASK_MODEL_URL = "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task"
 HAND_CONNECTIONS: Tuple[Tuple[int, int], ...] = (
@@ -176,7 +179,6 @@ MOUSE_POS_EMA = None
 MUTEX_LAST = {}
 # Motion prediction for mouse follow
 MOTION_HISTORY = deque(maxlen=5)  # Track fingertip positions for velocity estimation
-BLUR_THRESHOLD = 100.0  # Laplacian variance threshold for blur detection
 FOLLOW_TOGGLE_FRAME = -999  # Track when follow was last toggled to debounce
 FOLLOW_TOGGLE_COOLDOWN = 10  # Frames to wait before accepting new toggle
 
@@ -285,17 +287,120 @@ def draw_landmarks(frame: np.ndarray, landmarks) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  FILTERING, QUALITY GATES, ROI HELPERS
+# ════════════════════════════════════════════════════════════════════════════
+
+class OneEuroFilter:
+    def __init__(self, freq: float = 30.0, min_cutoff: float = 1.0,
+                 beta: float = 0.0, d_cutoff: float = 1.0):
+        self.freq = float(freq)
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.x_prev = None
+        self.dx_prev = None
+        self.last_ts = None
+
+    def _alpha(self, cutoff: float) -> float:
+        tau = 1.0 / (2.0 * pi * cutoff)
+        te = 1.0 / max(self.freq, 1e-6)
+        return 1.0 / (1.0 + tau / te)
+
+    def _lowpass(self, x, x_prev, alpha: float):
+        if x_prev is None:
+            return x
+        return alpha * x + (1.0 - alpha) * x_prev
+
+    def filter(self, x: np.ndarray, ts: Optional[float] = None) -> np.ndarray:
+        if ts is None:
+            ts = time.perf_counter()
+        if self.last_ts is not None:
+            dt = max(ts - self.last_ts, 1e-6)
+            self.freq = 1.0 / dt
+        self.last_ts = ts
+
+        if self.x_prev is None:
+            self.x_prev = x
+            self.dx_prev = np.zeros_like(x)
+            return x
+
+        dx = (x - self.x_prev) * self.freq
+        dx_hat = self._lowpass(dx, self.dx_prev, self._alpha(self.d_cutoff))
+        cutoff = self.min_cutoff + self.beta * np.abs(dx_hat)
+        x_hat = self._lowpass(x, self.x_prev, self._alpha(cutoff))
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        return x_hat
+
+
+def compute_blur_score(frame: np.ndarray) -> float:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def compute_brightness(frame: np.ndarray) -> float:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(np.mean(gray))
+
+
+def compute_hand_bbox(landmarks: np.ndarray, w: int, h: int,
+                      margin: float = 0.25, min_size: int = 80) -> Tuple[int, int, int, int]:
+    xs = landmarks[:, 0] * w
+    ys = landmarks[:, 1] * h
+    x1, x2 = float(np.min(xs)), float(np.max(xs))
+    y1, y2 = float(np.min(ys)), float(np.max(ys))
+    bw = max(x2 - x1, min_size)
+    bh = max(y2 - y1, min_size)
+    pad_w = bw * margin
+    pad_h = bh * margin
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+    x1 = int(max(cx - bw * 0.5 - pad_w, 0))
+    y1 = int(max(cy - bh * 0.5 - pad_h, 0))
+    x2 = int(min(cx + bw * 0.5 + pad_w, w - 1))
+    y2 = int(min(cy + bh * 0.5 + pad_h, h - 1))
+    return x1, y1, x2, y2
+
+
+def map_landmarks_to_full(landmarks: np.ndarray, roi: Tuple[int, int, int, int],
+                          frame_w: int, frame_h: int) -> np.ndarray:
+    x1, y1, x2, y2 = roi
+    rw = max(x2 - x1, 1)
+    rh = max(y2 - y1, 1)
+    out = landmarks.copy()
+    out[:, 0] = (out[:, 0] * rw + x1) / max(frame_w, 1)
+    out[:, 1] = (out[:, 1] * rh + y1) / max(frame_h, 1)
+    return out
+
+
+def detect_landmarks_with_roi(detector, frame_bgr: np.ndarray,
+                               roi: Optional[Tuple[int, int, int, int]] = None):
+    if roi is None:
+        lm = detect_landmarks(detector, frame_bgr)
+        if lm is None:
+            return None, None
+        return landmarks_to_array(lm), None
+    x1, y1, x2, y2 = roi
+    crop = frame_bgr[y1:y2, x1:x2]
+    if crop.size == 0:
+        return detect_landmarks(detector, frame_bgr), None
+    lm = detect_landmarks(detector, crop)
+    if lm is None:
+        return None, None
+    arr = landmarks_to_array(lm)
+    return arr, roi
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  BLUR DETECTION & MOTION PREDICTION HELPERS
 # ════════════════════════════════════════════════════════════════════════════
 
-def is_frame_blurry(frame: np.ndarray, threshold: float = BLUR_THRESHOLD) -> bool:
+def is_frame_blurry(frame: np.ndarray, threshold: float) -> bool:
     """Check if frame is blurry using Laplacian variance."""
     if frame is None or frame.size == 0:
         return True
     try:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        return laplacian_var < threshold
+        return compute_blur_score(frame) < threshold
     except Exception:
         return False
 
@@ -346,6 +451,99 @@ def toggle_mouse_follow(enable: bool, frame_idx: int, force: bool = False) -> bo
 #  MAIN
 # ════════════════════════════════════════════════════════════════════════════
 
+def run_calibration_mode(args) -> None:
+    """Run gesture calibration mode (record templates for KNN matching)."""
+    print("🎓 Gesture Calibration Mode")
+    print("=" * 60)
+    
+    # Setup camera
+    cap = cv2.VideoCapture(args.camera_id)
+    if not cap.isOpened():
+        raise RuntimeError(f"Không mở được camera id {args.camera_id}")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  args.camera_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.camera_height)
+    cap.set(cv2.CAP_PROP_FPS,          args.camera_fps)
+    
+    # Setup detector
+    detector = create_detector(Path(args.task_model), args.det_conf, args.track_conf)
+    
+    # Setup calibrator & UI
+    calibrator = GestureCalibrator()
+    ui = CalibrationUI(calibrator)
+    
+    print(f"📷 Camera: {args.camera_width}x{args.camera_height} @ {args.camera_fps} FPS")
+    print(f"🎨 Gesture mode: Press SPACE to record, S to skip, Q to exit\n")
+    
+    frame_idx = 0
+    landmark_filtered = None
+    one_euro = OneEuroFilter(min_cutoff=args.oneeuro_min_cutoff,
+                            beta=args.oneeuro_beta,
+                            d_cutoff=args.oneeuro_d_cutoff)
+    missing_count = 0
+    
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                time.sleep(0.005)
+                continue
+            
+            frame_idx += 1
+            
+            # Detect landmarks
+            raw_landmarks = detect_landmarks(detector, frame)
+            
+            if raw_landmarks is not None:
+                missing_count = 0
+                raw_landmarks = landmarks_to_array(raw_landmarks)
+                
+                # Filter
+                if args.landmark_filter == "oneeuro":
+                    raw_landmarks = one_euro.filter(raw_landmarks, time.perf_counter())
+                else:
+                    if landmark_filtered is not None:
+                        alpha = float(np.clip(args.landmark_ema_alpha, 0.0, 0.99))
+                        raw_landmarks = alpha * landmark_filtered + (1.0 - alpha) * raw_landmarks
+                
+                landmark_filtered = raw_landmarks
+                
+                # Add to calibrator buffer if recording
+                if ui.is_recording:
+                    calibrator.add_landmarks_frame(landmark_filtered)
+                
+                # Draw landmarks
+                draw_landmarks(frame, landmark_filtered)
+            else:
+                missing_count += 1
+                if missing_count >= args.missing_reset_frames:
+                    landmark_filtered = None
+            
+            # Draw UI
+            ui.draw_overlay(frame, frame_idx)
+            
+            # Show frame
+            cv2.imshow("Gesture Calibration", frame)
+            
+            # Handle keys
+            key = cv2.waitKey(1) & 0xFF
+            action = ui.handle_keypress(key, frame_idx)
+            
+            if action == "quit":
+                break
+            elif action == "finish_calibration":
+                break
+    
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        if hasattr(detector, "close"):
+            detector.close()
+        
+        # Summary
+        print("\n" + ui.get_calibration_summary())
+        print("\n✅ Calibration completed! Templates saved to:", calibrator.save_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       default="")
@@ -362,10 +560,21 @@ def main() -> None:
     parser.add_argument("--track-conf",  type=float, default=0.35)
     parser.add_argument("--ema-alpha",   type=float, default=0.7)
     parser.add_argument("--landmark-ema-alpha", type=float, default=0.08)
+    parser.add_argument("--landmark-filter", choices=["ema", "oneeuro"], default="ema")
+    parser.add_argument("--oneeuro-min-cutoff", type=float, default=1.2)
+    parser.add_argument("--oneeuro-beta", type=float, default=0.01)
+    parser.add_argument("--oneeuro-d-cutoff", type=float, default=1.0)
     parser.add_argument("--max-hand-jump",      type=float, default=0.12)
     parser.add_argument("--missing-reset-frames", type=int, default=30)
     parser.add_argument("--topk",        type=int,   default=3)
     parser.add_argument("--min-confidence", type=float, default=0.35)
+    parser.add_argument("--blur-threshold", type=float, default=100.0)
+    parser.add_argument("--brightness-min", type=float, default=35.0)
+    parser.add_argument("--brightness-max", type=float, default=230.0)
+    parser.add_argument("--min-hand-size", type=float, default=0.02,
+                        help="Min hand bbox area ratio to accept frame (0..1)")
+    parser.add_argument("--quality-min-ok", type=int, default=3,
+                        help="Require this many consecutive quality-ok frames before action")
     parser.add_argument("--send-cooldown",  type=int,   default=15,
                         help="Số frame chờ giữa 2 lần gửi phím (default 15 ~ 0.5s)")
     parser.add_argument("--stable-count", type=int, default=3,
@@ -386,16 +595,31 @@ def main() -> None:
     parser.add_argument("--overlay-lang", choices=["vi","code","both"], default="vi")
     parser.add_argument("--use-z",       action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use-velocity",action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--roi-enable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--roi-margin", type=float, default=0.25)
+    parser.add_argument("--roi-min-size", type=int, default=100)
+    parser.add_argument("--roi-max-miss", type=int, default=8)
+    parser.add_argument("--calibration-mode", action="store_true", default=False,
+                        help="Enable gesture calibration mode (record templates)")
+    parser.add_argument("--knn-mode", action="store_true", default=False,
+                        help="Use KNN matching instead of STGCN for faster gesture recognition")
     args = parser.parse_args()
+
+    # ── Calibration mode ─────────────────────────────────────────────────────
+    if args.calibration_mode:
+        run_calibration_mode(args)
+        return
 
     # ── Tìm file model & labels ──────────────────────────────────────────────
     model_candidates = [
+        Path("Gan_nut\stgcn_best.pt"),
+        Path("outputs_resume/stgcn_trained_6ch.pt"),
         Path("outputs_resume2/stgcn_best.pt"), Path("outputs_resume/stgcn_best.pt"),
         Path("outputs/outputs/stgcn_best.pt"),  Path("outputs/stgcn_best.pt"),
         Path("data/stgcn_best.pt"),
     ]
     labels_candidates = [
-        Path("outputs_resume2/labels.json"), Path("outputs_resume/labels.json"),
+        Path("Gan_nut\labels.json"), Path("Gan_nut\labels.json"),
         Path("outputs/outputs/labels.json"),  Path("outputs/labels.json"),
         Path("data/labels.json"),
     ]
@@ -440,10 +664,33 @@ def main() -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.camera_height)
     cap.set(cv2.CAP_PROP_FPS,          args.camera_fps)
 
+    frame_lock = threading.Lock()
+    latest_frame = {"frame": None, "ts": 0.0}
+    stop_event = threading.Event()
+
+    def capture_loop():
+        while not stop_event.is_set():
+            ok, frame = cap.read()
+            if not ok:
+                time.sleep(0.005)
+                continue
+            with frame_lock:
+                latest_frame["frame"] = frame
+                latest_frame["ts"] = time.perf_counter()
+
+    capture_thread = threading.Thread(target=capture_loop, daemon=True)
+    capture_thread.start()
+
     frame_buffer = deque(maxlen=args.length)
-    prob_ema, landmark_ema = None, None
+    prob_ema, landmark_filtered = None, None
+    one_euro = OneEuroFilter(min_cutoff=args.oneeuro_min_cutoff,
+                             beta=args.oneeuro_beta,
+                             d_cutoff=args.oneeuro_d_cutoff)
     missing_count  = 0
     fps_ema, prev_ts = None, time.perf_counter()
+    quality_ok_count = 0
+    roi_bbox = None
+    roi_miss = 0
 
     # Biến gửi phím
     last_sent_label = None
@@ -545,20 +792,13 @@ def main() -> None:
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok: break
-
+            with frame_lock:
+                frame = latest_frame["frame"]
+            if frame is None:
+                time.sleep(0.002)
+                continue
+            frame = frame.copy()
             frame_idx += 1  # Increment frame counter
-
-            # ── Blur detection ───────────────────────────────────────────────
-            if is_frame_blurry(frame, BLUR_THRESHOLD):
-                cv2.putText(frame, "⚠️ Frame blurry (skip inference)",
-                            (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-                cv2.imshow("ST-GCN Hand Gesture Demo", frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == ord('Q'):
-                    break
-                continue  # Skip this frame
 
             # FPS
             now_ts = time.perf_counter()
@@ -566,25 +806,76 @@ def main() -> None:
             prev_ts = now_ts
             fps_ema = (1/dt) if fps_ema is None else (0.9*fps_ema + 0.1/dt)
 
-            # ── Landmark detection ───────────────────────────────────────────
-            landmarks = detect_landmarks(detector, frame)
-            if landmarks is not None:
+            # ── Quality metrics ─────────────────────────────────────────────
+            blur_score = compute_blur_score(frame)
+            brightness = compute_brightness(frame)
+            quality_reasons = []
+            if blur_score < args.blur_threshold:
+                quality_reasons.append("blurry")
+            if brightness < args.brightness_min:
+                quality_reasons.append("dark")
+            elif brightness > args.brightness_max:
+                quality_reasons.append("bright")
+
+            # ── Landmark detection with ROI ─────────────────────────────────
+            frame_h, frame_w = frame.shape[:2]
+            use_roi = args.roi_enable and roi_bbox is not None
+            raw_landmarks, roi_used = detect_landmarks_with_roi(detector, frame, roi_bbox if use_roi else None)
+            if raw_landmarks is not None and roi_used is not None:
+                raw_landmarks = map_landmarks_to_full(raw_landmarks, roi_used, frame_w, frame_h)
+
+            if raw_landmarks is not None:
                 missing_count = 0
-                current = landmarks_to_array(landmarks)
-                if landmark_ema is not None:
-                    alpha   = float(np.clip(args.landmark_ema_alpha, 0.0, 0.99))
-                    current = alpha * landmark_ema + (1.0 - alpha) * current
-                landmark_ema = current
-                draw_landmarks(frame, current)
-                frame_buffer.append(current)
+                roi_miss = 0
+
+                # reject large wrist jumps
+                if landmark_filtered is not None:
+                    prev_wrist = landmark_filtered[0]
+                    curr_wrist = raw_landmarks[0]
+                    if np.linalg.norm(curr_wrist[:2] - prev_wrist[:2]) > args.max_hand_jump:
+                        raw_landmarks = landmark_filtered
+
+                if args.landmark_filter == "oneeuro":
+                    raw_landmarks = one_euro.filter(raw_landmarks, now_ts)
+                else:
+                    if landmark_filtered is not None:
+                        alpha = float(np.clip(args.landmark_ema_alpha, 0.0, 0.99))
+                        raw_landmarks = alpha * landmark_filtered + (1.0 - alpha) * raw_landmarks
+
+                landmark_filtered = raw_landmarks
+                frame_buffer.append(landmark_filtered)
+
+                if args.roi_enable:
+                    roi_bbox = compute_hand_bbox(landmark_filtered, frame_w, frame_h,
+                                                args.roi_margin, args.roi_min_size)
             else:
                 missing_count += 1
+                roi_miss += 1
+                if roi_miss >= args.roi_max_miss:
+                    roi_bbox = None
                 if missing_count >= args.missing_reset_frames:
                     frame_buffer.clear()
-                    prob_ema, landmark_ema = None, None
-                elif landmark_ema is not None:
-                    frame_buffer.append(landmark_ema)
-                    draw_landmarks(frame, landmark_ema)
+                    prob_ema, landmark_filtered = None, None
+                elif landmark_filtered is not None:
+                    frame_buffer.append(landmark_filtered)
+
+            # hand size quality check
+            hand_size_ratio = 0.0
+            if landmark_filtered is not None:
+                xs = landmark_filtered[:, 0]
+                ys = landmark_filtered[:, 1]
+                hand_size_ratio = float((np.max(xs) - np.min(xs)) * (np.max(ys) - np.min(ys)))
+                if hand_size_ratio < args.min_hand_size:
+                    quality_reasons.append("hand_small")
+
+            quality_ok = len(quality_reasons) == 0 and landmark_filtered is not None
+            if quality_ok:
+                quality_ok_count += 1
+            else:
+                quality_ok_count = 0
+
+            if landmark_filtered is not None:
+                draw_landmarks(frame, landmark_filtered)
 
             # ── Status bar ───────────────────────────────────────────────────
             cv2.putText(frame, f"Frames: {len(frame_buffer)}/{args.length}",
@@ -594,9 +885,14 @@ def main() -> None:
                             (frame.shape[1]-120, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_MUTED, 1)
 
+            # quality overlay
+            if quality_reasons:
+                cv2.putText(frame, f"Quality: {', '.join(quality_reasons)}",
+                            (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+
             # ── Inference ────────────────────────────────────────────────────
             top_label, top_conf = "D0X", 0.0
-            if len(frame_buffer) >= args.min_action_frames:
+            if len(frame_buffer) >= args.min_action_frames and landmark_filtered is not None:
                 # Use available frames (can be shorter than args.length for responsiveness)
                 seq = np.stack(list(frame_buffer), axis=0)
                 if not use_z: seq = seq[:, :, :2]
@@ -679,6 +975,9 @@ def main() -> None:
                                         (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_CYAN, 2)
                         else:
                             MOUSE_FOLLOW_ENABLED = False
+                    else:
+                        # 📌 VÁ LỖI 1: Tắt chuột khi chuyển sang cử chỉ khác (ví dụ: đang rê chuột thì chuyển sang nắm tay click)
+                        MOUSE_FOLLOW_ENABLED = False       
 
                     if mapped_key and (stable_label or is_instant):
                         # Check wrist stability over the buffered frames
@@ -701,6 +1000,8 @@ def main() -> None:
                             # skip spurious action when hand moved
                             pass
                         elif not is_instant and now - last_action_ts < args.action_delay:
+                            pass
+                        elif quality_ok_count < args.quality_min_ok and not is_instant:
                             pass
                         elif top_label != last_sent_label or send_cooldown <= 0:
                             performed = False
@@ -732,10 +1033,10 @@ def main() -> None:
                     send_cooldown -= 1
 
                 # Mouse follow: if enabled, move mouse to index fingertip (landmark idx 8)
-                if MOUSE_FOLLOW_ENABLED and len(frame_buffer) >= args.min_action_frames and landmark_ema is not None:
+                if MOUSE_FOLLOW_ENABLED and len(frame_buffer) >= args.min_action_frames and landmark_filtered is not None:
                     try:
                         # use the latest landmarks (landmark_ema or current)
-                        lm = landmark_ema if landmark_ema is not None else current
+                        lm = landmark_filtered
                         idx8 = lm[8]  # x,y
                         # idx8 coords are normalized (0..1) relative to image
                         fx, fy = float(idx8[0]), float(idx8[1])
@@ -770,6 +1071,7 @@ def main() -> None:
                 break
 
     finally:
+        stop_event.set()
         cap.release()
         cv2.destroyAllWindows()
         if hasattr(detector, "close"):

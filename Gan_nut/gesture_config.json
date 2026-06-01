@@ -1,16 +1,18 @@
+
+
 {
   "D0X": "",
   "B0A": "mouse:follow_on|still|follow_hold",
   "B0B": "",
   "G01": "",
-  "G02": "mouse:right",
+  "G02": "instant:mouse:right",
   "G03": "up",
   "G04": "down",
   "G05": "left",
   "G06": "right",
   "G07": "f5",
-  "G08": "mouse:left",
-  "G09": "mouse:right",
+  "G08": "instant:mouse:left",
+  "G09": "instant:mouse:right",
   "G10": "hotkey:ctrl+=|mutex=zoom",
   "G11": "hotkey:ctrl+-|mutex=zoom"
 }
