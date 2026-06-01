@@ -62,8 +62,12 @@ outputs/
 final_model/outputs_kaggle/
 *.zip
 
+<<<<<<< HEAD
 train.npz
 train1.npz
 
 raw_ipn_merged_clean
 stgcn_best.pt 
+=======
+data/processed/*.npz
+>>>>>>> Demo

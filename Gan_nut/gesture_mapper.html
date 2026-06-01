@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ST-GCN Bộ Gán Phím Cử Chỉ</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@500;700&display=swap');
+
+  :root {
+    --bg: #030307;
+    --panel: #090911;
+    --panel-hover: #111122;
+    --border: #1d1d35;
+    --accent: #8b5cf6;
+    --accent-gradient: linear-gradient(135deg, #8b5cf6, #ec4899);
+    --cyan-gradient: linear-gradient(135deg, #06b6d4, #3b82f6);
+    --text: #f8fafc;
+    --muted: #64748b;
+    --success: #10b981;
+    --success-bg: rgba(16,185,129,0.1);
+    --danger: #ef4444;
+    --danger-bg: rgba(239,68,68,0.1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .container { width: 100%; max-width: 1100px; }
+
+  header {
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 2.2rem;
+    font-weight: 700;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.02em;
+  }
+
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border);
+    padding: 12px 20px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.01);
+    font-size: 0.8rem;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(139,92,246,0.05);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .row {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+    position: relative;
+  }
+  .row:hover { border-color: rgba(139,92,246,0.4); background: var(--panel-hover); transform: translateY(-2px); box-shadow: 0 10px 20px -10px rgba(0,0,0,0.5); }
+  .row.has-key-row { border-color: rgba(16,185,129,0.2); }
+
+  .badge {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.8rem; font-weight: 700;
+    padding: 6px 12px; border-radius: 8px;
+    background: var(--border); color: var(--text);
+    min-width: 54px; text-align: center; transition: all 0.2s;
+  }
+  .row:hover .badge { background: var(--accent); color: white; }
+  .row.has-key-row .badge { background: var(--success-bg); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
+
+  .gesture-name { font-size: 0.85rem; font-weight: 600; color: #cbd5e1; flex: 1; line-height: 1.4; }
+  .row.has-key-row .gesture-name { color: var(--text); }
+
+  /* Nút hiển thị action đã gán — click để mở picker */
+  .action-btn {
+    background: #020205;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.82rem; font-weight: 500;
+    padding: 8px 12px;
+    min-width: 110px; text-align: center;
+    cursor: pointer; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .action-btn:hover { border-color: var(--accent); color: var(--text); }
+  .action-btn.has-key { border-color: var(--success); color: var(--success); background: var(--success-bg); font-weight: 700; }
+
+  .clear-btn {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 1.2rem; padding: 4px;
+    transition: all 0.15s; display: flex; align-items: center;
+    justify-content: center; border-radius: 6px;
+  }
+  .clear-btn:hover { color: var(--danger); background: var(--danger-bg); }
+
+  /* ── PICKER MODAL ─────────────────────────────────────── */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: #0c0c18;
+    border: 1px solid #2a2a45;
+    border-radius: 20px;
+    width: 700px; max-width: 96vw;
+    max-height: 88vh;
+    overflow-y: auto;
+    padding: 28px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.7);
+  }
+
+  .modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 20px; padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1.1rem; font-weight: 700;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .modal-close {
+    background: none; border: none; color: var(--muted);
+    font-size: 1.4rem; cursor: pointer; padding: 4px 8px;
+    border-radius: 8px; transition: all 0.15s;
+  }
+  .modal-close:hover { color: var(--danger); background: var(--danger-bg); }
+
+  /* Tab nhóm */
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .tab {
+    padding: 7px 16px; border-radius: 8px;
+    border: 1px solid var(--border);
+    background: none; color: var(--muted);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 0.8rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+  /* Lưới nút action */
+  .action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+  }
+  .action-opt {
+    padding: 10px 8px; border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #0a0a18; color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.8rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+    text-align: center; line-height: 1.3;
+  }
+  .action-opt:hover { border-color: var(--accent); background: rgba(139,92,246,0.1); transform: translateY(-1px); }
+  .action-opt.mouse-opt { border-color: rgba(6,182,212,0.3); }
+  .action-opt.mouse-opt:hover { border-color: #06b6d4; background: rgba(6,182,212,0.1); }
+  .action-opt.hotkey-opt { border-color: rgba(236,72,153,0.3); }
+  .action-opt.hotkey-opt:hover { border-color: #ec4899; background: rgba(236,72,153,0.1); }
+  .action-opt.clear-opt { border-color: rgba(239,68,68,0.3); color: var(--danger); }
+  .action-opt.clear-opt:hover { border-color: var(--danger); background: var(--danger-bg); }
+
+  /* Ô nhập tùy chỉnh */
+  .custom-zone {
+    margin-top: 20px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .custom-zone label { font-size: 0.82rem; color: var(--muted); white-space: nowrap; }
+  .custom-input {
+    flex: 1; min-width: 180px;
+    background: #020205; border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text);
+    font-family: monospace; font-size: 0.85rem;
+    padding: 8px 12px; outline: none;
+    transition: border-color 0.15s;
+  }
+  .custom-input:focus { border-color: var(--accent); }
+  .custom-input::placeholder { color: var(--muted); }
+  .btn-apply {
+    padding: 9px 20px; border-radius: 8px; border: none;
+    background: var(--accent-gradient); color: white;
+    font-family: 'Space Grotesk', sans-serif; font-size: 0.85rem; font-weight: 700;
+    cursor: pointer; transition: opacity 0.15s;
+  }
+  .btn-apply:hover { opacity: 0.9; }
+
+  /* footer */
+  .footer-actions {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 20px; padding: 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 20px;
+  }
+  .buttons { display: flex; gap: 14px; align-items: center; }
+  .btn-save {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.95rem;
+    padding: 14px 32px; border-radius: 12px; border: none;
+    background: var(--accent-gradient); color: white; cursor: pointer;
+    transition: all 0.2s; box-shadow: 0 4px 15px rgba(139,92,246,0.3);
+  }
+  .btn-save:hover { opacity: 0.95; transform: translateY(-1px); }
+  .btn-clear-all {
+    font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 600; font-size: 0.85rem;
+    padding: 14px 24px; border-radius: 12px; border: 1px solid var(--border);
+    background: none; color: var(--muted); cursor: pointer; transition: all 0.2s;
+  }
+  .btn-clear-all:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+  .status {
+    font-size: 0.9rem; font-weight: 600; color: var(--success);
+    display: flex; align-items: center; gap: 6px;
+    opacity: 0; transform: translateX(-10px);
+    transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .status.show { opacity: 1; transform: translateX(0); }
+  .hint { font-size: 0.8rem; color: var(--muted); line-height: 1.6; }
+  .hint span { color: #ec4899; font-weight: 600; background: rgba(236,72,153,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+  .preview-section { margin-top: 24px; width: 100%; display: none; }
+  .preview-title { font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .saved-box { background: #020205; border: 1px solid var(--border); border-radius: 12px; padding: 16px; font-family: monospace; font-size: 0.8rem; color: #a78bfa; overflow-x: auto; max-height: 200px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div>
+      <h1>⚡ Bộ Gán Phím Cử Chỉ</h1>
+      <p class="subtitle">Gán phím, tổ hợp phím, hoặc hành động chuột cho từng cử chỉ ST-GCN</p>
+    </div>
+    <div class="drop-zone" id="drop-zone">
+      <span>📂 Kéo thả <b>gesture_config.json</b> vào đây để nạp</span>
+      <input type="file" id="file-input" accept=".json" style="display:none">
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="footer-actions">
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div class="hint">Click vào ô action của từng cử chỉ để chọn phím / chuột / tổ hợp</div>
+      <div class="hint">Hỗ trợ: <span>Phím đơn</span> <span>Ctrl+C/V/Z...</span> <span>Click chuột</span> <span>Scroll</span> <span>Tùy chỉnh</span></div>
+    </div>
+    <div class="buttons">
+        <span class="status" id="status">✅ Đã lưu thành công!</span>
+        <button class="btn-clear-all" onclick="clearAll()">✕ Xóa tất cả</button>
+        <button class="btn-save" onclick="previewConfig()">📄 Xem JSON</button>
+        <button class="btn-save" onclick="copyConfig()">📋 Copy JSON</button>
+        <button class="btn-save" onclick="downloadConfig()">💾 Tải JSON</button>
+    </div>
+  </div>
+
+  <div class="preview-section" id="preview-section">
+    <div class="preview-title">Nội dung JSON:</div>
+    <pre class="saved-box" id="saved-box"></pre>
+  </div>
+</div>
+
+<!-- ── PICKER MODAL ─────────────────────────────────── -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">Chọn action cho G01</div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+
+    <div class="tabs" id="tabs"></div>
+    <div class="action-grid" id="action-grid"></div>
+
+    <div class="custom-zone">
+      <label>✏️ Tùy chỉnh:</label>
+      <input class="custom-input" id="custom-input"
+             placeholder="vd: hotkey:ctrl+shift+t  hoặc  run:notepad.exe">
+      <div style="display:flex;gap:8px;align-items:center;margin-left:8px">
+        <label style="font-size:0.8rem;color:#9ca3af">Stable</label>
+        <input id="opt-stable" type="number" min="0" placeholder="3" style="width:66px;padding:6px;border-radius:6px;background:#020205;border:1px solid #1d1d35;color:#a78bfa">
+        <label style="font-size:0.8rem;color:#9ca3af">Still</label>
+        <input id="opt-still" type="checkbox">
+        <label style="font-size:0.8rem;color:#9ca3af">Mutex</label>
+        <input id="opt-mutex" type="text" placeholder="group name" style="width:120px;padding:6px;border-radius:6px;background:#020205;border:1px solid #1d1d35;color:#a78bfa">
+    <label style="font-size:0.8rem;color:#9ca3af">Follow hold</label>
+    <input id="opt-follow-hold" type="checkbox">
+        <button class="btn-apply" onclick="applyCustom()">Áp dụng</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const GESTURES = [
+  { id:"D0X", name:"Không cử chỉ (Nghỉ)" },
+  { id:"B0A", name:"Chỉ 1 ngón tay" },
+  { id:"B0B", name:"Chỉ 2 ngón tay" },
+  { id:"G01", name:"Click 1 ngón" },
+  { id:"G02", name:"Click 2 ngón" },
+  { id:"G03", name:"Hất lên (Throw up)" },
+  { id:"G04", name:"Hất xuống (Throw down)" },
+  { id:"G05", name:"Hất trái (Throw left)" },
+  { id:"G06", name:"Hất phải (Throw right)" },
+  { id:"G07", name:"Mở 2 lần (Open twice)" },
+  { id:"G08", name:"Nhấp đúp 1 ngón" },
+  { id:"G09", name:"Nhấp đúp 2 ngón" },
+  { id:"G10", name:"Phóng to (Zoom in)" },
+  { id:"G11", name:"Thu nhỏ (Zoom out)" },
+];
+
+// ── Nhóm action ──────────────────────────────────────────────────────────
+const ACTION_GROUPS = {
+  "🖱️ Chuột": [
+    { val:"mouse:follow_on",    label:"Follow ON",     cls:"mouse-opt" },
+    { val:"mouse:follow_off",   label:"Follow OFF",    cls:"mouse-opt" },
+    { val:"mouse:left",        label:"Click Trái",      cls:"mouse-opt" },
+    { val:"mouse:right",       label:"Click Phải",      cls:"mouse-opt" },
+    { val:"mouse:middle",      label:"Click Giữa",      cls:"mouse-opt" },
+    { val:"mouse:double",      label:"Double Click",    cls:"mouse-opt" },
+    { val:"mouse:scroll_up",   label:"Scroll Lên ↑",   cls:"mouse-opt" },
+    { val:"mouse:scroll_down", label:"Scroll Xuống ↓", cls:"mouse-opt" },
+  ],
+  "⌨️ Phím thường": [
+    { val:"space",     label:"Space" },
+    { val:"enter",     label:"Enter ↵" },
+    { val:"tab",       label:"Tab ⇥" },
+    { val:"esc",       label:"Esc" },
+    { val:"backspace", label:"Backspace ⌫" },
+    { val:"delete",    label:"Delete" },
+    { val:"left",      label:"← Trái" },
+    { val:"right",     label:"→ Phải" },
+    { val:"up",        label:"↑ Lên" },
+    { val:"down",      label:"↓ Xuống" },
+    { val:"pageup",    label:"Page Up" },
+    { val:"pagedown",  label:"Page Down" },
+    { val:"home",      label:"Home" },
+    { val:"end",       label:"End" },
+  ],
+  "🔡 Chữ / Số": [
+    ...Array.from("abcdefghijklmnopqrstuvwxyz").map(c=>({val:c,label:c.toUpperCase()})),
+    ...Array.from("0123456789").map(c=>({val:c,label:c})),
+  ],
+  "🎮 F-Keys & Game": [
+    { val:"f1",    label:"F1" },{ val:"f2",  label:"F2" },
+    { val:"f3",    label:"F3" },{ val:"f4",  label:"F4" },
+    { val:"f5",    label:"F5" },{ val:"f6",  label:"F6" },
+    { val:"f7",    label:"F7" },{ val:"f8",  label:"F8" },
+    { val:"f9",    label:"F9" },{ val:"f10", label:"F10" },
+    { val:"f11",   label:"F11"},{ val:"f12", label:"F12"},
+    { val:"shift", label:"Shift" },
+    { val:"ctrl",  label:"Ctrl" },
+    { val:"alt",   label:"Alt" },
+  ],
+  "🎛️ Tổ hợp phím": [
+    { val:"hotkey:ctrl+c",         label:"Ctrl+C",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+v",         label:"Ctrl+V",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+z",         label:"Ctrl+Z",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+y",         label:"Ctrl+Y",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+x",         label:"Ctrl+X",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+a",         label:"Ctrl+A",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+s",         label:"Ctrl+S",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+w",         label:"Ctrl+W",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+t",         label:"Ctrl+T",          cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+shift+t",   label:"Ctrl+Shift+T",    cls:"hotkey-opt" },
+    { val:"hotkey:alt+f4",         label:"Alt+F4",          cls:"hotkey-opt" },
+    { val:"hotkey:alt+tab",        label:"Alt+Tab",         cls:"hotkey-opt" },
+    { val:"hotkey:win+d",          label:"Win+D",           cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+shift+esc", label:"Ctrl+Shift+Esc",  cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+=", label:"Ctrl+ (Zoom +)", cls:"hotkey-opt" },
+    { val:"hotkey:ctrl+-", label:"Ctrl- (Zoom -)", cls:"hotkey-opt" },
+  ],
+  "❌ Xóa gán": [
+    { val:"__clear__", label:"— Xóa action —", cls:"clear-opt" },
+  ],
+};
+
+// ── Hiển thị tên đẹp cho value ───────────────────────────────────────────
+function actionLabel(val) {
+  if (!val) return "— trống —";
+  for (const items of Object.values(ACTION_GROUPS)) {
+    const found = items.find(x => x.val === val);
+    if (found) return found.label;
+  }
+  return val;
+}
+
+let mapping = {};
+let currentGid = null;
+let activeTab  = Object.keys(ACTION_GROUPS)[0];
+
+GESTURES.forEach(g => { mapping[g.id] = ""; });
+
+// ── Build danh sách gesture ───────────────────────────────────────────────
+function buildUI() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+
+  GESTURES.forEach(g => {
+    const hasKey = !!mapping[g.id];
+
+    const row = document.createElement("div");
+    row.className = "row" + (hasKey ? " has-key-row" : "");
+
+    const badge = document.createElement("div");
+    badge.className = "badge";
+    badge.textContent = g.id;
+
+    const name = document.createElement("div");
+    name.className = "gesture-name";
+    name.textContent = g.name;
+
+    const btn = document.createElement("button");
+    btn.className = "action-btn" + (hasKey ? " has-key" : "");
+    btn.textContent = actionLabel(mapping[g.id]);
+    btn.onclick = () => openModal(g.id);
+
+    const clr = document.createElement("button");
+    clr.className = "clear-btn";
+    clr.title = "Xóa";
+    clr.innerHTML = "&times;";
+    clr.onclick = (e) => { e.stopPropagation(); mapping[g.id]=""; buildUI(); };
+
+    row.appendChild(badge);
+    row.appendChild(name);
+    row.appendChild(btn);
+    row.appendChild(clr);
+    grid.appendChild(row);
+  });
+}
+
+// ── Modal picker ─────────────────────────────────────────────────────────
+function openModal(gid) {
+  currentGid = gid;
+  const g = GESTURES.find(x => x.id === gid);
+  document.getElementById("modal-title").textContent = `Chọn action cho  ${gid}  —  ${g.name}`;
+  document.getElementById("custom-input").value = "";
+  renderTabs();
+  renderActions();
+  document.getElementById("modal").classList.add("open");
+}
+
+function closeModal() {
+  document.getElementById("modal").classList.remove("open");
+  currentGid = null;
+}
+
+// Click ngoài modal → đóng
+document.getElementById("modal").addEventListener("click", function(e) {
+  if (e.target === this) closeModal();
+});
+
+function renderTabs() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  Object.keys(ACTION_GROUPS).forEach(name => {
+    const t = document.createElement("button");
+    t.className = "tab" + (name === activeTab ? " active" : "");
+    t.textContent = name;
+    t.onclick = () => { activeTab = name; renderTabs(); renderActions(); };
+    tabs.appendChild(t);
+  });
+}
+
+function renderActions() {
+  const grid = document.getElementById("action-grid");
+  grid.innerHTML = "";
+  const items = ACTION_GROUPS[activeTab] || [];
+  items.forEach(item => {
+    const btn = document.createElement("button");
+    btn.className = "action-opt " + (item.cls || "");
+    btn.textContent = item.label;
+    btn.onclick = () => selectAction(item.val);
+    grid.appendChild(btn);
+  });
+}
+
+function selectAction(val) {
+  if (!currentGid) return;
+  if (val === "__clear__") {
+    mapping[currentGid] = "";
+  } else {
+    // attach modal options if present
+    const stable = document.getElementById('opt-stable').value.trim();
+    const still = document.getElementById('opt-still').checked;
+    const mutex = document.getElementById('opt-mutex').value.trim();
+  const follow_hold = document.getElementById('opt-follow-hold').checked;
+    let out = val;
+    if (stable) out += `|stable_count=${stable}`;
+    if (still)  out += `|still`;
+    if (mutex)  out += `|mutex=${mutex}`;
+  if (follow_hold) out += `|follow_hold`;
+    mapping[currentGid] = out;
+  }
+  closeModal();
+  buildUI();
+}
+
+function applyCustom() {
+  const v = document.getElementById("custom-input").value.trim();
+  if (!v) return;
+  if (!currentGid) return;
+  const stable = document.getElementById('opt-stable').value.trim();
+  const still = document.getElementById('opt-still').checked;
+  const mutex = document.getElementById('opt-mutex').value.trim();
+  const follow_hold = document.getElementById('opt-follow-hold').checked;
+  let out = v;
+  if (stable) out += `|stable_count=${stable}`;
+  if (still)  out += `|still`;
+  if (mutex)  out += `|mutex=${mutex}`;
+  if (follow_hold) out += `|follow_hold`;
+  mapping[currentGid] = out;
+  closeModal();
+  buildUI();
+}
+
+// ── Lưu / Load ───────────────────────────────────────────────────────────
+function clearAll() {
+  if (confirm("Xóa toàn bộ action đã gán?")) {
+    GESTURES.forEach(g => { mapping[g.id] = ""; });
+    buildUI();
+    document.getElementById("preview-section").style.display = "none";
+  }
+}
+
+function saveConfig() {
+  // old behavior preserved if you want to explicitly download
+  previewConfig();
+}
+
+function previewConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+  document.getElementById("preview-section").style.display = "block";
+  document.getElementById("saved-box").textContent = json;
+}
+
+function copyConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+  navigator.clipboard.writeText(json).then(() => {
+    const st = document.getElementById("status");
+    st.classList.add("show");
+    setTimeout(() => st.classList.remove("show"), 1500);
+  });
+}
+
+function downloadConfig() {
+  const json = JSON.stringify(mapping, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'gesture_config.json';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+// ── Drag & drop JSON ─────────────────────────────────────────────────────
+const dropZone = document.getElementById("drop-zone");
+dropZone.onclick = () => document.getElementById("file-input").click();
+document.getElementById("file-input").onchange = e => {
+  if (e.target.files.length > 0) handleJsonFile(e.target.files[0]);
+};
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop",     e => e.preventDefault());
+dropZone.ondragover = () => dropZone.classList.add("dragover");
+dropZone.ondragleave = () => dropZone.classList.remove("dragover");
+dropZone.ondrop = e => {
+  e.preventDefault(); dropZone.classList.remove("dragover");
+  if (e.dataTransfer.files.length > 0) handleJsonFile(e.dataTransfer.files[0]);
+};
+
+function handleJsonFile(file) {
+  if (!file.name.endsWith(".json")) { alert("Vui lòng chọn file .json!"); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      GESTURES.forEach(g => { mapping[g.id] = data[g.id] !== undefined ? data[g.id] : ""; });
+      buildUI();
+    } catch { alert("File JSON bị lỗi!"); }
+  };
+  reader.readAsText(file);
+}
+
+fetch("gesture_config.json")
+  .then(r => r.json())
+  .then(data => { GESTURES.forEach(g => { mapping[g.id] = data[g.id] || ""; }); buildUI(); })
+  .catch(() => buildUI());
+</script>
+</body>
+</html>
