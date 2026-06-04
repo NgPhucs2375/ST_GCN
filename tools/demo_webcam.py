@@ -1,8 +1,8 @@
 import os
-# 🔥 VẮC-XIN CHỐNG ĐƠ CAM CHO WINDOWS 🔥
-os.environ["OMP_NUM_THREADS"] = "1"
+# luồng CPU
+os.environ["OMP_NUM_THREADS"] = "4"
 import torch
-torch.set_num_threads(1)
+torch.set_num_threads(4)
 
 import argparse
 import json
@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models.stgcn import STGCN, build_hand_edge_index
 from gesture_calibrator import GestureCalibrator
+from knn_matcher import KNNGestureMatcher
 from calibration_ui import CalibrationUI
 
 TASK_MODEL_URL = "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task"
@@ -55,6 +56,9 @@ VI_LABELS: Dict[str, str] = {
 }
 
 GESTURE_ORDER = ["D0X","B0A","B0B","G01","G02","G03","G04","G05","G06","G07","G08","G09","G10","G11"]
+
+# Cử chỉ tĩnh, sẽ được ưu tiên bởi KNN trong hybrid mode
+STATIC_GESTURES = {"B0A", "B0B", "D0X"}
 
 # Màu sắc UI
 C_CYAN      = (255, 210, 60)     # vàng nhấn
@@ -603,12 +607,34 @@ def main() -> None:
                         help="Enable gesture calibration mode (record templates)")
     parser.add_argument("--knn-mode", action="store_true", default=False,
                         help="Use KNN matching instead of STGCN for faster gesture recognition")
+    parser.add_argument("--hybrid-mode", action="store_true", default=False,
+                        help="Enable Hybrid mode: KNN for static gestures, ST-GCN for dynamic.")
+    parser.add_argument("--knn-templates", type=str, default="Gan_nut/gesture_templates.json",
+                        help="Path to gesture_templates.json for KNN/Hybrid mode.")
+    parser.add_argument("--knn-threshold", type=float, default=2.5,
+                        help="Distance threshold for a valid KNN match.")
+    parser.add_argument("--knn-k", type=int, default=3, help="Number of neighbors for KNN.")
     args = parser.parse_args()
 
     # ── Calibration mode ─────────────────────────────────────────────────────
     if args.calibration_mode:
         run_calibration_mode(args)
         return
+
+    # --- KNN/Hybrid Mode Setup ---
+    knn_matcher = None
+    if args.hybrid_mode or args.knn_mode:
+        templates_path = Path(args.knn_templates)
+        if not templates_path.exists():
+            print(f"⚠️  KNN/Hybrid mode: Template file not found at {templates_path}")
+            print(f"⚠️  Run calibration first: python tools/demo_webcam.py --calibration-mode")
+            if args.knn_mode: # knn-mode cannot function without templates
+                return
+        else:
+            # Note: GestureCalibrator is used here just to load templates for the matcher
+            calibrator = GestureCalibrator(save_path=templates_path)
+            knn_matcher = KNNGestureMatcher(calibrator, k=args.knn_k)
+            print(f"✅ KNN/Hybrid mode: Loaded {len(calibrator.templates)} templates from {templates_path}.")
 
     # ── Tìm file model & labels ──────────────────────────────────────────────
     model_candidates = [
@@ -625,8 +651,12 @@ def main() -> None:
     ]
     model_path  = Path(args.model)  if args.model  else first_existing(model_candidates)
     labels_path = Path(args.labels) if args.labels else first_existing(labels_candidates)
-    if model_path is None or labels_path is None:
+    
+    # ST-GCN is not needed for pure KNN mode
+    if not args.knn_mode and (model_path is None or labels_path is None):
         raise FileNotFoundError("Không tìm thấy checkpoint hoặc labels.json!")
+    elif args.knn_mode:
+        print("🏃 Chạy chế độ KNN. Model ST-GCN sẽ không được tải.")
 
     # ── Load gesture config ──────────────────────────────────────────────────
     config_path    = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
@@ -637,24 +667,26 @@ def main() -> None:
         print(f"   {gid:5s} → [{key}]")
 
     # ── Load model ───────────────────────────────────────────────────────────
-    label_map = load_label_map(labels_path)
-    labels    = index_to_label(label_map, len(label_map))
-    device    = resolve_device(args.device)
-    state     = torch.load(model_path, map_location=device)
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
+    model, labels, device, use_z, use_velocity, use_acceleration = None, [], "cpu", False, False, False
+    if not args.knn_mode:
+        label_map = load_label_map(labels_path)
+        labels    = index_to_label(label_map, len(label_map))
+        device    = resolve_device(args.device)
+        state     = torch.load(model_path, map_location=device)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
 
-    in_channels = infer_in_channels_from_state(state)
-    inferred_use_z, inferred_use_velocity, inferred_use_acceleration = infer_feature_config(in_channels)
-    use_z            = inferred_use_z            if args.use_z       is None else args.use_z
-    use_velocity     = inferred_use_velocity     if args.use_velocity is None else args.use_velocity
-    use_acceleration = inferred_use_acceleration
+        in_channels = infer_in_channels_from_state(state)
+        inferred_use_z, inferred_use_velocity, inferred_use_acceleration = infer_feature_config(in_channels)
+        use_z            = inferred_use_z            if args.use_z       is None else args.use_z
+        use_velocity     = inferred_use_velocity     if args.use_velocity is None else args.use_velocity
+        use_acceleration = inferred_use_acceleration
 
-    edge_index = build_hand_edge_index()
-    model      = STGCN(in_channels=in_channels, num_classes=len(labels), edge_index=edge_index)
-    model.load_state_dict(state, strict=True)
-    model.to(device).eval()
-
+        edge_index = build_hand_edge_index()
+        model      = STGCN(in_channels=in_channels, num_classes=len(labels), edge_index=edge_index)
+        model.load_state_dict(state, strict=True)
+        model.to(device).eval()
+        print(f"✅ Model: {model_path} | Channels: {in_channels} | Device: {device}")
     detector = create_detector(Path(args.task_model), args.det_conf, args.track_conf)
 
     cap = cv2.VideoCapture(args.camera_id)
@@ -790,17 +822,17 @@ def main() -> None:
     MOUSE_FOLLOW_ENABLED = False
     MOUSE_POS_EMA = None
 
-    print(f"✅ Model: {model_path} | Channels: {in_channels} | Device: {device}")
     print("🎮 Hệ thống đang chạy cử chỉ... Nhấn Q trong cửa sổ camera để thoát")
 
     try:
         while True:
+            frame = None
             with frame_lock:
-                frame = latest_frame["frame"]
+                if latest_frame["frame"] is not None:
+                    frame = latest_frame["frame"].copy() # Copy ngay trong lock ngắn để giải phóng sớm
             if frame is None:
                 time.sleep(0.002)
                 continue
-            frame = frame.copy()
             frame_idx += 1  # Increment frame counter
 
             # FPS
@@ -847,35 +879,35 @@ def main() -> None:
 
                 landmark_filtered = raw_landmarks
                 frame_buffer.append(landmark_filtered)
-                # ==============================================================
-                # ⚡ PATCH: HYBRID CLICK TỐC ĐỘ CAO (QUA MẶT ST-GCN)
-                # ==============================================================
-                if landmark_filtered is not None:
-                    # Điểm số 4 là đầu ngón cái, điểm số 8 là đầu ngón trỏ
-                    thumb_tip = landmark_filtered[4][:2] 
-                    index_tip = landmark_filtered[8][:2]
+                # # ==============================================================
+                # # ⚡ PATCH: HYBRID CLICK TỐC ĐỘ CAO (QUA MẶT ST-GCN)
+                # # ==============================================================
+                # if landmark_filtered is not None:
+                #     # Điểm số 4 là đầu ngón cái, điểm số 8 là đầu ngón trỏ
+                #     thumb_tip = landmark_filtered[4][:2] 
+                #     index_tip = landmark_filtered[8][:2]
                     
-                    # Tính khoảng cách Euclidean giữa 2 ngón
-                    pinch_dist = float(np.linalg.norm(thumb_tip - index_tip))
+                #     # Tính khoảng cách Euclidean giữa 2 ngón
+                #     pinch_dist = float(np.linalg.norm(thumb_tip - index_tip))
                     
-                    # Nếu khoảng cách < 0.04 (Hai ngón chạm nhau)
-                    if pinch_dist < 0.04:
-                        if not PINCH_CLICKED and (now_ts - LAST_PINCH_TS > 0.3): # Cooldown 0.3s
-                            print("⚡ BẮT CLICK SIÊU TỐC TỪ KHỚP XƯƠNG!")
+                #     # Nếu khoảng cách < 0.04 (Hai ngón chạm nhau)
+                #     if pinch_dist < 0.04:
+                #         if not PINCH_CLICKED and (now_ts - LAST_PINCH_TS > 0.3): # Cooldown 0.3s
+                #             print("⚡ BẮT CLICK SIÊU TỐC TỪ KHỚP XƯƠNG!")
                             
-                            # Chạy click chuột khác luồng để không làm giật camera
-                            threading.Thread(target=lambda: pyautogui.click(button='left'), daemon=True).start()
+                #             # Chạy click chuột khác luồng để không làm giật camera
+                #             threading.Thread(target=lambda: pyautogui.click(button='left'), daemon=True).start()
                             
-                            PINCH_CLICKED = True
-                            LAST_PINCH_TS = now_ts
+                #             PINCH_CLICKED = True
+                #             LAST_PINCH_TS = now_ts
                             
-                            # Hiển thị UI
-                            cv2.putText(frame, ">> ACTION: [INSTANT CLICK]", (20, 130), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-                    else:
-                        # Thả tay ra thì reset lại trạng thái
-                        PINCH_CLICKED = False
-                # ==============================================================
+                #             # Hiển thị UI
+                #             cv2.putText(frame, ">> ACTION: [INSTANT CLICK]", (20, 130), 
+                #                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+                #     else:
+                #         # Thả tay ra thì reset lại trạng thái
+                #         PINCH_CLICKED = False
+                # # ==============================================================
 
                 if args.roi_enable:
                     roi_bbox = compute_hand_bbox(landmark_filtered, frame_w, frame_h,
@@ -922,11 +954,39 @@ def main() -> None:
                 cv2.putText(frame, f"Quality: {', '.join(quality_reasons)}",
                             (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
+            # --- KNN Prediction (for KNN and Hybrid modes) ---
+            knn_prediction = None
+            if (args.knn_mode or args.hybrid_mode) and knn_matcher and landmark_filtered is not None:
+                knn_prediction = knn_matcher.predict_knn(landmark_filtered, threshold=args.knn_threshold)
+                if knn_prediction:
+                    gid, dist, _ = knn_prediction
+                    # Display KNN's raw prediction
+                    cv2.putText(frame, f"KNN: {gid} ({dist:.2f})", (frame.shape[1] - 200, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_CYAN, 1)
+
             # ── Inference ────────────────────────────────────────────────────
             top_label, top_conf = "D0X", 0.0
-            if len(frame_buffer) >= args.min_action_frames and landmark_filtered is not None:
+
+            if args.knn_mode:
+                if knn_prediction:
+                    top_label = knn_prediction[0]
+                    top_conf = max(0.0, 1.0 - (knn_prediction[1] / args.knn_threshold))
+                else:
+                    top_label, top_conf = "D0X", 0.0
+                prob_ema = None # In KNN mode, we don't use EMA
+
+                # Display result for KNN mode
+                top_text = format_label(top_label, args.overlay_lang)
+                if top_conf > 0.1:
+                    display, color = f"{top_text} ({top_conf:.2f})", C_GREEN
+                else:
+                    display, color = f"Khong chac ({top_conf:.2f})", (80, 170, 250)
+                cv2.putText(frame, display, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            elif len(frame_buffer) >= args.min_action_frames and landmark_filtered is not None:
                 # Use available frames (can be shorter than args.length for responsiveness)
                 seq = np.stack(list(frame_buffer), axis=0)
+                
                 if not use_z: seq = seq[:, :, :2]
                 seq = normalize_frames(seq)
                 if use_acceleration: seq = add_acceleration(seq)
@@ -940,10 +1000,31 @@ def main() -> None:
                     args.ema_alpha * prob_ema + (1.0 - args.ema_alpha) * probs)
 
                 scores, indices = torch.topk(prob_ema, min(args.topk, prob_ema.numel()))
-                top_label = labels[int(indices[0].item())]
-                top_conf  = float(scores[0].item())
-                top_text  = format_label(top_label, args.overlay_lang)
+                stgcn_label = labels[int(indices[0].item())]
+                stgcn_conf  = float(scores[0].item())
 
+                # --- Hybrid Logic: Override with KNN for static gestures ---
+                if args.hybrid_mode and knn_prediction:
+                    knn_label, knn_dist, _ = knn_prediction
+                    if knn_label in STATIC_GESTURES:
+                        # Static gesture detected by KNN, let's override ST-GCN
+                        top_label = knn_label
+                        top_conf = max(0.0, 1.0 - (knn_dist / args.knn_threshold))
+                        # Reset EMA and history to make the override more responsive
+                        # prob_ema = None
+                        # label_history.clear()
+                        # Add a visual indicator for the override
+                        cv2.putText(frame, "KNN OVERRIDE", (frame.shape[1] - 150, 90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    else:
+                        # KNN detected a dynamic gesture, let ST-GCN handle it
+                        top_label, top_conf = stgcn_label, stgcn_conf
+                else:
+                    # Default ST-GCN behavior
+                    top_label, top_conf = stgcn_label, stgcn_conf
+
+                top_text  = format_label(top_label, args.overlay_lang)
+                
                 if top_conf >= args.min_confidence:
                     display, color = f"{top_text} ({top_conf:.2f})", C_GREEN
                 else:
@@ -952,7 +1033,7 @@ def main() -> None:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
                 # ── Gửi phím dựa trên file JSON (yêu cầu độ ổn định label) ─────
-                if top_conf >= args.min_confidence and top_label != "D0X":
+                if top_conf >= args.min_confidence and (top_label != "D0X" or args.knn_mode):
                     raw_mapping = gesture_config.get(top_label, "")
                     mapped_key = raw_mapping
                     # If mapping requests follow_hold, enable follow while this gesture is active

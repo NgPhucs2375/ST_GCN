@@ -18,3 +18,6 @@ final_model/outputs_kaggle/
 data/processed/*.npzcontext_du_an.txt 
 context_du_an.txt 
 context_du_an.txt 
+data/processed/ 
+*.npz 
+*.pt 

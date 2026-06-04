@@ -23,6 +23,7 @@ if follow_hold_requested:  # ← check if mapping has "|follow_hold"
         MOUSE_FOLLOW_ENABLED = False  # ← OFF nếu không stable
 ```
 
+git reset --soft HEAD~1
 ### stable_label là gì? (Line 668-669)
 
 ```python
