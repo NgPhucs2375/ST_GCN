@@ -5,11 +5,11 @@ KNN Gesture Matcher - Fast real-time gesture matching using precomputed template
 import numpy as np
 from typing import Optional, Tuple, List, Dict
 from pathlib import Path
-from gesture_calibrator import GestureCalibrator
+from gesture_calibrator import GestureCalibrator, SEQUENCE_LENGTH
 
 
 class KNNGestureMatcher:
-    """K-Nearest Neighbors matcher cho gesture recognition."""
+    """K-Nearest Neighbors matcher cho gesture recognition dựa trên chuỗi."""
     
     def __init__(self, calibrator: GestureCalibrator, k: int = 3):
         self.calibrator = calibrator
@@ -18,73 +18,61 @@ class KNNGestureMatcher:
         self._build_buffer()
     
     def _build_buffer(self) -> None:
-        """Build cached buffer của mean landmarks cho mỗi gesture."""
+        """Build cached buffer của các chuỗi landmark đã được phẳng hóa."""
         self.template_buffer = []
         for gid, template in self.calibrator.templates.items():
-            mean_lm = np.array(template.mean_landmarks, dtype=np.float32)
-            self.template_buffer.append((gid, mean_lm))
+            if not hasattr(template, 'sequence_landmarks'):
+                continue
+            seq_lm = np.array(template.sequence_landmarks, dtype=np.float32)
+            if seq_lm.shape == (SEQUENCE_LENGTH, 21, 3):
+                flattened_seq = seq_lm.flatten()
+                self.template_buffer.append((gid, flattened_seq))
     
-    def predict_knn(self, landmarks: np.ndarray, 
-                    threshold: float = 2.0) -> Optional[Tuple[str, float, List[Tuple[str, float]]]]:
+    def predict_sequence_knn(self, landmarks_sequence: np.ndarray, 
+                             threshold: float = 15.0) -> Optional[Tuple[str, float, List[Tuple[str, float]]]]:
         """
-        KNN prediction. Return (top_gesture, top_distance, neighbors_list) or None if no match.
+        KNN prediction trên một chuỗi landmark.
+        Return (top_gesture, top_distance, neighbors_list) or None.
+        
+        Args:
+            landmarks_sequence: np.ndarray with shape (SEQUENCE_LENGTH, 21, 3)
+            threshold: Ngưỡng khoảng cách để chấp nhận một kết quả.
         """
-        if not self.template_buffer:
+        if not self.template_buffer or landmarks_sequence.shape != (SEQUENCE_LENGTH, 21, 3):
             return None
         
-        if landmarks.shape != (21, 3):
-            return None
+        # 1. Chuẩn hóa chuỗi đầu vào (giống hệt lúc calibrate)
+        wrist = landmarks_sequence[0:1, 0:1, :]
+        normalized_sequence = landmarks_sequence - wrist
+        palm = normalized_sequence[0:1, 9:10, :]
+        scale = np.linalg.norm(palm, axis=-1, keepdims=True)
+        scale[scale < 1e-6] = 1.0
+        normalized_sequence = normalized_sequence / scale
         
-        # Compute distances to all templates
-        distances: Dict[str, float] = {}
-        for gid, mean_lm in self.template_buffer:
-            template = self.calibrator.templates[gid]
-            std_array = np.array(template.std_landmarks, dtype=np.float32)
-            std_array[std_array < 1e-6] = 1.0
+        # 2. Phẳng hóa thành vector dài
+        query_vector = normalized_sequence.flatten()
+        
+        # 3. Tính khoảng cách tới tất cả các template
+        distances = []
+        for gid, template_vector in self.template_buffer:
+            # Dùng khoảng cách Manhattan (L1) vì nó nhanh hơn và thường hiệu quả
+            # cho dữ liệu nhiều chiều.
+            dist = np.sum(np.abs(query_vector - template_vector))
+            distances.append((gid, float(dist)))
             
-            dist = np.linalg.norm((landmarks - mean_lm) / std_array)
-            distances[gid] = float(dist)
+        # 4. Sort và tìm k-neighbors
+        if not distances:
+            return None
+            
+        sorted_gestures = sorted(distances, key=lambda x: x[1])
         
-        # Sort by distance
-        sorted_gestures = sorted(distances.items(), key=lambda x: x[1])
-        
-        # Top gesture
         top_gid, top_dist = sorted_gestures[0]
         
         if top_dist > threshold:
             return None
         
-        # K neighbors
+        # 5. Lấy k neighbors và thực hiện voting (nếu cần)
+        # Hiện tại, chỉ trả về kết quả gần nhất (1-NN)
         k_neighbors = sorted_gestures[:self.k]
         
         return top_gid, top_dist, k_neighbors
-    
-    def predict_voting(self, landmarks_sequence: List[np.ndarray],
-                       threshold: float = 2.0) -> Optional[Tuple[str, float]]:
-        """
-        Predict gesture từ sequence of frames using voting (majority).
-        Return (gesture_id, confidence) or None.
-        """
-        predictions = []
-        for lm in landmarks_sequence:
-            result = self.predict_knn(lm, threshold=threshold * 1.5)  # relax threshold for sequence
-            if result:
-                gid, dist, _ = result
-                predictions.append((gid, 1.0 / (1.0 + dist)))  # confidence = 1/(1+distance)
-        
-        if not predictions:
-            return None
-        
-        # Voting
-        gesture_votes: Dict[str, float] = {}
-        for gid, conf in predictions:
-            gesture_votes[gid] = gesture_votes.get(gid, 0) + conf
-        
-        best_gid = max(gesture_votes, key=gesture_votes.get)
-        best_score = gesture_votes[best_gid]
-        
-        # Normalize confidence
-        total_vote = sum(gesture_votes.values())
-        confidence = best_score / total_vote if total_vote > 0 else 0.0
-        
-        return best_gid, confidence

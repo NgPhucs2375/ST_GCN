@@ -5,7 +5,7 @@ Gesture Calibration UI - Interactive interface for recording gesture templates.
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from gesture_calibrator import GestureCalibrator, GESTURE_ORDER
 
 
@@ -54,7 +54,7 @@ class CalibrationUI:
     def finish_recording(self) -> bool:
         """Kết thúc record & move to next gesture. Return True nếu hoàn tất."""
         if self.is_recording:
-            success = self.calibrator.finish_calibration(min_frames=10)
+            success = self.calibrator.finish_calibration()
             self.is_recording = False
             
             if success:

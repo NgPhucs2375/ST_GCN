@@ -36,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.stgcn import STGCN, build_hand_edge_index
-from gesture_calibrator import GestureCalibrator
+from gesture_calibrator import GestureCalibrator, SEQUENCE_LENGTH
 from knn_matcher import KNNGestureMatcher
 from calibration_ui import CalibrationUI
 
@@ -56,9 +56,6 @@ VI_LABELS: Dict[str, str] = {
 }
 
 GESTURE_ORDER = ["D0X","B0A","B0B","G01","G02","G03","G04","G05","G06","G07","G08","G09","G10","G11"]
-
-# Cử chỉ tĩnh, sẽ được ưu tiên bởi KNN trong hybrid mode
-STATIC_GESTURES = {"B0A", "B0B", "D0X"}
 
 # Màu sắc UI
 C_CYAN      = (255, 210, 60)     # vàng nhấn
@@ -348,15 +345,24 @@ def compute_brightness(frame: np.ndarray) -> float:
 
 
 def compute_hand_bbox(landmarks: np.ndarray, w: int, h: int,
-                      margin: float = 0.25, min_size: int = 80) -> Tuple[int, int, int, int]:
+                      hand_size_ratio: float, args) -> Tuple[int, int, int, int]:
+    # Tự động tính margin dựa trên kích thước bàn tay
+    # Tay càng to (gần cam) -> margin càng lớn để tránh mất ngón
+    # Tay càng nhỏ (xa cam) -> margin càng nhỏ để giảm nhiễu nền
+    margin_range = [args.roi_margin_min, args.roi_margin_max]
+    size_range = [args.min_hand_size, args.roi_size_max]
+    
+    dynamic_margin = np.interp(hand_size_ratio, size_range, margin_range)
+    dynamic_margin = float(np.clip(dynamic_margin, margin_range[0], margin_range[1]))
+
     xs = landmarks[:, 0] * w
     ys = landmarks[:, 1] * h
     x1, x2 = float(np.min(xs)), float(np.max(xs))
-    y1, y2 = float(np.min(ys)), float(np.max(ys))
-    bw = max(x2 - x1, min_size)
-    bh = max(y2 - y1, min_size)
-    pad_w = bw * margin
-    pad_h = bh * margin
+    y1, y2 = float(np.min(ys)), float(np.max(ys)) # Sửa lỗi: trước đây là np.max(ys) cho cả y1, y2
+    bw = max(x2 - x1, args.roi_min_size)
+    bh = max(y2 - y1, args.roi_min_size)
+    pad_w = bw * dynamic_margin
+    pad_h = bh * dynamic_margin
     cx = (x1 + x2) * 0.5
     cy = (y1 + y2) * 0.5
     x1 = int(max(cx - bw * 0.5 - pad_w, 0))
@@ -585,6 +591,8 @@ def main() -> None:
                         help="Số lần cùng 1 label phải xuất hiện liên tiếp trước khi thực hiện action (giảm false positives)")
     parser.add_argument("--action-delay",   type=float, default=0.4,
                         help="Số giây tối thiểu giữa 2 action thực sự (debounce) - prevents spurious sequential actions")
+    parser.add_argument("--stability-majority-threshold", type=float, default=0.75,
+                        help="Ngưỡng bỏ phiếu đa số để xác định label ổn định (0..1). Default 0.75")
     parser.add_argument("--stability-threshold", type=float, default=0.03,
                         help="Max allowed wrist movement (normalized) during sequence to consider landmarks stable")
     parser.add_argument("--mouse-follow-smooth", type=float, default=0.6,
@@ -601,6 +609,9 @@ def main() -> None:
     parser.add_argument("--use-velocity",action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--roi-enable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--roi-margin", type=float, default=0.25)
+    parser.add_argument("--roi-margin-min", type=float, default=0.15, help="Dynamic ROI: min margin")
+    parser.add_argument("--roi-margin-max", type=float, default=0.4, help="Dynamic ROI: max margin")
+    parser.add_argument("--roi-size-max", type=float, default=0.5, help="Dynamic ROI: hand size for max margin")
     parser.add_argument("--roi-min-size", type=int, default=100)
     parser.add_argument("--roi-max-miss", type=int, default=8)
     parser.add_argument("--calibration-mode", action="store_true", default=False,
@@ -611,8 +622,8 @@ def main() -> None:
                         help="Enable Hybrid mode: KNN for static gestures, ST-GCN for dynamic.")
     parser.add_argument("--knn-templates", type=str, default="Gan_nut/gesture_templates.json",
                         help="Path to gesture_templates.json for KNN/Hybrid mode.")
-    parser.add_argument("--knn-threshold", type=float, default=2.5,
-                        help="Distance threshold for a valid KNN match.")
+    parser.add_argument("--knn-threshold", type=float, default=15.0,
+                        help="Distance threshold for a valid KNN sequence match.")
     parser.add_argument("--knn-k", type=int, default=3, help="Number of neighbors for KNN.")
     args = parser.parse_args()
 
@@ -758,21 +769,10 @@ def main() -> None:
             else:
                 opts[p.strip()] = True
 
-        # compute effective stable count
-        eff_stable = int(opts.get('stable_count', args.stable_count))
-        # check label stability using last entries of label_history
-        lh = list(label_history)
-        if eff_stable > 0 and len(lh) < eff_stable:
-            return False
-        stable_label = True
-        if eff_stable > 0:
-            tail = lh[-eff_stable:]
-            stable_label = all(l == top_label for l in tail)
-        if not stable_label:
-            return False
-
         # wrist still requirement
         if 'still' in opts:
+            # The stability check is now done in the main loop before calling this.
+            # This function now assumes the label is stable.
             try:
                 seq_wrist = seq[:, 0:1, :2]
                 disp = np.linalg.norm(seq_wrist - seq_wrist[0:1], axis=-1)
@@ -879,6 +879,14 @@ def main() -> None:
 
                 landmark_filtered = raw_landmarks
                 frame_buffer.append(landmark_filtered)
+                
+                # --- Dynamic ROI Scaling ---
+                hand_size_ratio = 0.0
+                xs = landmark_filtered[:, 0]; ys = landmark_filtered[:, 1]
+                hand_size_ratio = float((np.max(xs) - np.min(xs)) * (np.max(ys) - np.min(ys)))
+
+                if args.roi_enable:
+                    roi_bbox = compute_hand_bbox(landmark_filtered, frame_w, frame_h, hand_size_ratio, args)
                 # # ==============================================================
                 # # ⚡ PATCH: HYBRID CLICK TỐC ĐỘ CAO (QUA MẶT ST-GCN)
                 # # ==============================================================
@@ -908,10 +916,6 @@ def main() -> None:
                 #         # Thả tay ra thì reset lại trạng thái
                 #         PINCH_CLICKED = False
                 # # ==============================================================
-
-                if args.roi_enable:
-                    roi_bbox = compute_hand_bbox(landmark_filtered, frame_w, frame_h,
-                                                args.roi_margin, args.roi_min_size)
             else:
                 missing_count += 1
                 roi_miss += 1
@@ -922,15 +926,11 @@ def main() -> None:
                     prob_ema, landmark_filtered = None, None
                 elif landmark_filtered is not None:
                     frame_buffer.append(landmark_filtered)
+                hand_size_ratio = 0.0 # Reset hand size when no landmarks are found
 
             # hand size quality check
-            hand_size_ratio = 0.0
-            if landmark_filtered is not None:
-                xs = landmark_filtered[:, 0]
-                ys = landmark_filtered[:, 1]
-                hand_size_ratio = float((np.max(xs) - np.min(xs)) * (np.max(ys) - np.min(ys)))
-                if hand_size_ratio < args.min_hand_size:
-                    quality_reasons.append("hand_small")
+            if landmark_filtered is not None and hand_size_ratio < args.min_hand_size:
+                quality_reasons.append("hand_small")
 
             quality_ok = len(quality_reasons) == 0 and landmark_filtered is not None
             if quality_ok:
@@ -956,12 +956,18 @@ def main() -> None:
 
             # --- KNN Prediction (for KNN and Hybrid modes) ---
             knn_prediction = None
-            if (args.knn_mode or args.hybrid_mode) and knn_matcher and landmark_filtered is not None:
-                knn_prediction = knn_matcher.predict_knn(landmark_filtered, threshold=args.knn_threshold)
+            if (args.knn_mode or args.hybrid_mode) and knn_matcher and len(frame_buffer) >= SEQUENCE_LENGTH:
+                # Lấy N frame cuối từ buffer để tạo chuỗi
+                sequence_to_predict = list(frame_buffer)[-SEQUENCE_LENGTH:]
+                sequence_array = np.stack(sequence_to_predict, axis=0)
+
+                # Gọi hàm predict mới dựa trên chuỗi
+                knn_prediction = knn_matcher.predict_sequence_knn(sequence_array, threshold=args.knn_threshold)
+
                 if knn_prediction:
                     gid, dist, _ = knn_prediction
                     # Display KNN's raw prediction
-                    cv2.putText(frame, f"KNN: {gid} ({dist:.2f})", (frame.shape[1] - 200, 60),
+                    cv2.putText(frame, f"KNN Seq: {gid} ({dist:.1f})", (frame.shape[1] - 200, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_CYAN, 1)
 
             # ── Inference ────────────────────────────────────────────────────
@@ -1006,19 +1012,17 @@ def main() -> None:
                 # --- Hybrid Logic: Override with KNN for static gestures ---
                 if args.hybrid_mode and knn_prediction:
                     knn_label, knn_dist, _ = knn_prediction
-                    if knn_label in STATIC_GESTURES:
-                        # Static gesture detected by KNN, let's override ST-GCN
-                        top_label = knn_label
-                        top_conf = max(0.0, 1.0 - (knn_dist / args.knn_threshold))
-                        # Reset EMA and history to make the override more responsive
-                        # prob_ema = None
-                        # label_history.clear()
-                        # Add a visual indicator for the override
-                        cv2.putText(frame, "KNN OVERRIDE", (frame.shape[1] - 150, 90),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                    else:
-                        # KNN detected a dynamic gesture, let ST-GCN handle it
-                        top_label, top_conf = stgcn_label, stgcn_conf
+                    # Với sequence matching, KNN có thể nhận diện cả cử chỉ động.
+                    # Do đó, ta sẽ luôn ưu tiên kết quả của KNN nếu nó tồn tại.
+                    top_label = knn_label
+                    # Chuyển đổi distance thành một dạng confidence score (0-1)
+                    top_conf = max(0.0, 1.0 - (knn_dist / args.knn_threshold))
+                    # Reset EMA và history để override phản hồi nhanh hơn
+                    # prob_ema = None
+                    # label_history.clear()
+                    # Thêm chỉ báo trên UI
+                    cv2.putText(frame, "KNN OVERRIDE", (frame.shape[1] - 150, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                 else:
                     # Default ST-GCN behavior
                     top_label, top_conf = stgcn_label, stgcn_conf
@@ -1051,11 +1055,33 @@ def main() -> None:
                     if mapped_key and mapped_key.lower().startswith("instant:"):
                         is_instant = True
                         mapped_key = mapped_key[8:]
+                        
                     # track label history
-                    try:
-                        label_history.append(top_label)
-                    except Exception:
-                        pass
+                    label_history.append(top_label)
+
+                    # --- Majority Voting for Label Stability ---
+                    stable_label = False
+                    voted_label = top_label
+                    lh = list(label_history)
+                    tail = lh[-args.stable_count:] if args.stable_count > 0 else lh
+                    
+                    if len(tail) >= args.stable_count and args.stable_count > 0:
+                        from collections import Counter
+                        counts = Counter(tail)
+                        most_common, num_most_common = counts.most_common(1)[0]
+                        
+                        if (num_most_common / len(tail)) >= args.stability_majority_threshold:
+                            stable_label = True
+                            voted_label = most_common
+                    
+                    # Override top_label with the stable one from history
+                    if stable_label and top_label != voted_label:
+                        top_label = voted_label
+                        # Update text for display
+                        top_text  = format_label(top_label, args.overlay_lang)
+                        # Add a visual indicator for the override
+                        cv2.putText(frame, "MAJORITY VOTE", (frame.shape[1] - 150, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
                     # early high-confidence path
                     early_trigger = False
@@ -1069,14 +1095,13 @@ def main() -> None:
                     except Exception:
                         early_trigger = False
 
-                    # check last N entries for stability (N = args.stable_count)
-                    lh = list(label_history)
-                    tail = lh[-args.stable_count:] if args.stable_count > 0 else lh
-                    stable_label = (len(tail) == args.stable_count and all(l == top_label for l in tail))
-
                     if not stable_label:
                         # show waiting overlay with progress towards stable_count
-                        prog = len([l for l in tail if l == top_label])
+                        prog = 0
+                        if len(tail) > 0:
+                            from collections import Counter
+                            counts = Counter(tail)
+                            prog = counts.get(top_label, 0)
                         cv2.putText(frame, f"Waiting stable ({prog}/{args.stable_count})...",
                                     (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200,200,80), 2)
 
