@@ -183,6 +183,9 @@ MOTION_HISTORY = deque(maxlen=5)  # Track fingertip positions for velocity estim
 FOLLOW_TOGGLE_FRAME = -999  # Track when follow was last toggled to debounce
 FOLLOW_TOGGLE_COOLDOWN = 10  # Frames to wait before accepting new toggle
 
+# 🚀 PATCH: Tự động tắt mouse follow khi không di chuyển
+FOLLOW_IDLE_START_TS = 0.0
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -436,23 +439,32 @@ def predict_fingertip_position(current_pos: Tuple[float, float], factor: float =
     return tuple(predicted.astype(int))
 
 def toggle_mouse_follow(enable: bool, frame_idx: int, force: bool = False) -> bool:
-    """Toggle mouse follow with debounce to prevent rapid on/off flickering.
+    """Toggle mouse follow with debounce and state management.
     
-    Returns True if toggle was accepted, False if still in cooldown.
+    Returns True if toggle was accepted, False if still in cooldown or no change.
     """
     global MOUSE_FOLLOW_ENABLED, FOLLOW_TOGGLE_FRAME, MOTION_HISTORY
     
+    # 1. If already in the desired state, do nothing.
+    if MOUSE_FOLLOW_ENABLED == enable:
+        return False
+
+    # 2. Check cooldown, unless forced
     if not force and (frame_idx - FOLLOW_TOGGLE_FRAME) < FOLLOW_TOGGLE_COOLDOWN:
         return False  # Still in cooldown, ignore
     
+    # 3. Perform the toggle
     MOUSE_FOLLOW_ENABLED = enable
     FOLLOW_TOGGLE_FRAME = frame_idx
-    MOTION_HISTORY.clear()  # Reset motion history when toggling
+    MOTION_HISTORY.clear()  # CRITICAL: Reset motion history to prevent jumps
     
+    # 4. Log the change
     if enable:
         print(f"[follow_toggle] ON @ frame {frame_idx} (debounced)")
     else:
-        print(f"[follow_toggle] OFF @ frame {frame_idx} (debounced)")
+        # Phân biệt giữa người dùng tắt và tự động tắt
+        log_msg = "auto-OFF (idle)" if force else "OFF (gesture lost/changed)"
+        print(f"[follow_toggle] {log_msg} @ frame {frame_idx} (debounced)")
     
     return True
 
@@ -480,6 +492,7 @@ def run_calibration_mode(args) -> None:
     # Setup calibrator & UI
     calibrator = GestureCalibrator()
     ui = CalibrationUI(calibrator)
+    ui = CalibrationUI(calibrator, num_samples=args.cal_samples)
     
     print(f"📷 Camera: {args.camera_width}x{args.camera_height} @ {args.camera_fps} FPS")
     print(f"🎨 Gesture mode: Press SPACE to record, S to skip, Q to exit\n")
@@ -597,6 +610,8 @@ def main() -> None:
                         help="Max allowed wrist movement (normalized) during sequence to consider landmarks stable")
     parser.add_argument("--mouse-follow-smooth", type=float, default=0.6,
                         help="EMA alpha for smoothing mouse movement (0..1), higher = smoother")
+    parser.add_argument("--follow-idle-timeout", type=float, default=2.0,
+                        help="Giây không hoạt động trước khi tự tắt mouse follow. 0 để vô hiệu hóa.")
     parser.add_argument("--min-action-frames", type=int, default=8,
                         help="Minimum number of frames buffered before attempting an action (for responsiveness). Default 8")
     parser.add_argument("--early-conf", type=float, default=0.85,
@@ -616,6 +631,8 @@ def main() -> None:
     parser.add_argument("--roi-max-miss", type=int, default=8)
     parser.add_argument("--calibration-mode", action="store_true", default=False,
                         help="Enable gesture calibration mode (record templates)")
+    parser.add_argument("--cal-samples", type=int, default=3,
+                        help="Number of samples to record per gesture during calibration.")
     parser.add_argument("--knn-mode", action="store_true", default=False,
                         help="Use KNN matching instead of STGCN for faster gesture recognition")
     parser.add_argument("--hybrid-mode", action="store_true", default=False,
@@ -1107,15 +1124,17 @@ def main() -> None:
 
                     # If this mapping is follow_hold, enable/disable follow based on stability
                     if follow_hold_requested:
-                        if stable_label or early_trigger or is_instant:
-                            MOUSE_FOLLOW_ENABLED = True
-                            cv2.putText(frame, f"MOUSE FOLLOW (hold)",
-                                        (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_CYAN, 2)
-                        else:
-                            MOUSE_FOLLOW_ENABLED = False
+                        if stable_label or early_trigger or is_instant: # Request to turn ON
+                            if toggle_mouse_follow(True, frame_idx):
+                                # Only draw if the toggle was successful this frame
+                                cv2.putText(frame, f"MOUSE FOLLOW (hold)",
+                                            (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_CYAN, 2)
+                        else: # Request to turn OFF because gesture is no longer stable
+                            toggle_mouse_follow(False, frame_idx)
                     else:
-                        # 📌 VÁ LỖI 1: Tắt chuột khi chuyển sang cử chỉ khác (ví dụ: đang rê chuột thì chuyển sang nắm tay click)
-                        MOUSE_FOLLOW_ENABLED = False       
+                        # 📌 VÁ LỖI 1: Tắt chuột khi chuyển sang cử chỉ khác
+                        # Request to turn OFF because the current gesture does not request follow
+                        toggle_mouse_follow(False, frame_idx)
 
                     if mapped_key and (stable_label or is_instant):
                         # Check wrist stability over the buffered frames
@@ -1162,7 +1181,8 @@ def main() -> None:
                 else:
                     last_sent_label = None
                     # reset label history when no stable detection
-                    MOUSE_FOLLOW_ENABLED = False
+                    # Force toggle OFF, bypassing debounce, as this is a hard reset
+                    toggle_mouse_follow(False, frame_idx, force=True)
                     try:
                         label_history.clear()
                     except Exception:
@@ -1170,6 +1190,28 @@ def main() -> None:
 
                 if send_cooldown > 0:
                     send_cooldown -= 1
+
+                # 🚀 PATCH: Tự động tắt mouse follow nếu không di chuyển
+                if MOUSE_FOLLOW_ENABLED and args.follow_idle_timeout > 0:
+                    movement = 0.0
+                    if len(MOTION_HISTORY) >= 2:
+                        positions = list(MOTION_HISTORY)
+                        pos_now = np.array(positions[-1], dtype=float)
+                        pos_prev = np.array(positions[-2], dtype=float)
+                        movement = np.linalg.norm(pos_now - pos_prev)
+
+                    if movement < 1.5:  # Ngưỡng pixel nhỏ để coi là đứng yên
+                        if FOLLOW_IDLE_START_TS == 0.0:
+                            FOLLOW_IDLE_START_TS = now_ts  # Bắt đầu đếm giờ
+                        elif (now_ts - FOLLOW_IDLE_START_TS) > args.follow_idle_timeout:
+                            # Đã hết thời gian chờ, tắt follow
+                            toggle_mouse_follow(False, frame_idx, force=True)
+                            FOLLOW_IDLE_START_TS = 0.0 # Reset
+                            cv2.putText(frame, "AUTO-OFF (idle)", (frame.shape[1] - 150, 150),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+                    else:
+                        # Có di chuyển, reset bộ đếm
+                        FOLLOW_IDLE_START_TS = 0.0
 
                 # Mouse follow: if enabled, move mouse to index fingertip (landmark idx 8)
                 if MOUSE_FOLLOW_ENABLED and len(frame_buffer) >= args.min_action_frames and landmark_filtered is not None:

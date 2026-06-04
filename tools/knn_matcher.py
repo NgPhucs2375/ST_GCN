@@ -20,13 +20,14 @@ class KNNGestureMatcher:
     def _build_buffer(self) -> None:
         """Build cached buffer của các chuỗi landmark đã được phẳng hóa."""
         self.template_buffer = []
-        for gid, template in self.calibrator.templates.items():
-            if not hasattr(template, 'sequence_landmarks'):
-                continue
-            seq_lm = np.array(template.sequence_landmarks, dtype=np.float32)
-            if seq_lm.shape == (SEQUENCE_LENGTH, 21, 3):
-                flattened_seq = seq_lm.flatten()
-                self.template_buffer.append((gid, flattened_seq))
+        for gid, template_list in self.calibrator.templates.items():
+            for template in template_list:
+                if not hasattr(template, 'sequence_landmarks'):
+                    continue
+                seq_lm = np.array(template.sequence_landmarks, dtype=np.float32)
+                if seq_lm.shape == (SEQUENCE_LENGTH, 21, 3):
+                    flattened_seq = seq_lm.flatten()
+                    self.template_buffer.append((gid, flattened_seq))
     
     def predict_sequence_knn(self, landmarks_sequence: np.ndarray, 
                              threshold: float = 15.0) -> Optional[Tuple[str, float, List[Tuple[str, float]]]]:

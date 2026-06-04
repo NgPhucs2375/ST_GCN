@@ -27,7 +27,7 @@ class GestureCalibrator:
     
     def __init__(self, save_path: Optional[Path] = None):
         self.save_path = save_path or Path("Gan_nut") / "gesture_templates.json"
-        self.templates: Dict[str, GestureTemplate] = {}
+        self.templates: Dict[str, List[GestureTemplate]] = {}
         self.current_gesture: Optional[str] = None
         self.current_buffer: List[np.ndarray] = []  # buffer landmarks cho gesture hiện tại
         self.load_templates()
@@ -38,17 +38,19 @@ class GestureCalibrator:
             try:
                 with open(self.save_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                for gid, tmpl_dict in data.items():
-                    # Tương thích ngược với template cũ (mean/std)
-                    if "mean_landmarks" in tmpl_dict:
-                        print(f"⚠️  Skipping old format template for {gid}. Please re-calibrate.")
-                        continue
-                    self.templates[gid] = GestureTemplate(
-                        gesture_id=gid,
-                        count=tmpl_dict["count"],
-                        sequence_landmarks=tmpl_dict["sequence_landmarks"],
-                        timestamp=tmpl_dict.get("timestamp", time.time())
-                    )
+                for gid, tmpl_list_data in data.items():
+                    self.templates[gid] = []
+                    for tmpl_dict in tmpl_list_data:
+                        # Tương thích ngược với template cũ (mean/std)
+                        if "mean_landmarks" in tmpl_dict:
+                            print(f"⚠️  Skipping old format template for {gid}. Please re-calibrate.")
+                            continue
+                        self.templates[gid].append(GestureTemplate(
+                            gesture_id=gid,
+                            count=tmpl_dict["count"],
+                            sequence_landmarks=tmpl_dict["sequence_landmarks"],
+                            timestamp=tmpl_dict.get("timestamp", time.time())
+                        ))
                 print(f"✅ Loaded {len(self.templates)} gesture templates from {self.save_path}")
             except Exception as e:
                 print(f"⚠️ Failed to load templates: {e}")
@@ -58,11 +60,13 @@ class GestureCalibrator:
         self.save_path.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         for gid, tmpl in self.templates.items():
-            data[gid] = {
-                "count": tmpl.count,
-                "sequence_landmarks": tmpl.sequence_landmarks,
-                "timestamp": tmpl.timestamp,
-            }
+            data[gid] = []
+            for t in tmpl:
+                data[gid].append({
+                    "count": t.count,
+                    "sequence_landmarks": t.sequence_landmarks,
+                    "timestamp": t.timestamp,
+                })
         with open(self.save_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         print(f"💾 Saved {len(self.templates)} gesture templates to {self.save_path}")
@@ -112,7 +116,8 @@ class GestureCalibrator:
             timestamp=time.time(),
         )
         
-        self.templates[self.current_gesture] = template
+        # Thêm template mới vào danh sách của cử chỉ hiện tại
+        self.templates.setdefault(self.current_gesture, []).append(template)
         print(f"✅ Calibrated {self.current_gesture}: captured a {SEQUENCE_LENGTH}-frame sequence.")
         
         self.current_gesture = None
@@ -125,4 +130,4 @@ class GestureCalibrator:
     
     def get_gesture_counts(self) -> Dict[str, int]:
         """Return số frames cho mỗi gesture đã calibrate."""
-        return {gid: t.count for gid, t in self.templates.items()}
+        return {gid: len(t_list) for gid, t_list in self.templates.items()}

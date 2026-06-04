@@ -23,9 +23,11 @@ GESTURE_ORDER = ["D0X","B0A","B0B","G01","G02","G03","G04","G05","G06","G07","G0
 class CalibrationUI:
     """UI cho Gesture Calibration mode."""
     
-    def __init__(self, calibrator: GestureCalibrator):
+    def __init__(self, calibrator: GestureCalibrator, num_samples: int = 3):
         self.calibrator = calibrator
         self.current_gesture_idx = 0
+        self.current_recording_idx = 0
+        self.recordings_per_gesture = max(1, num_samples)
         self.target_frames = 20  # mỗi gesture phải record 20 lần
         self.is_recording = False
         self.recording_started_at_frame = -1
@@ -58,14 +60,19 @@ class CalibrationUI:
             self.is_recording = False
             
             if success:
-                self.current_gesture_idx += 1
+                self.current_recording_idx += 1
                 self.calibrator.save_templates()
                 
-                if self.current_gesture_idx >= len(GESTURE_ORDER):
-                    print("✅ Calibration completed!")
-                    return True
-                else:
-                    print(f"📝 Move to next gesture: {self.get_current_gesture()}")
+                if self.current_recording_idx >= self.recordings_per_gesture:
+                    # Đã ghi đủ mẫu cho cử chỉ này, chuyển sang cử chỉ tiếp theo
+                    self.current_recording_idx = 0
+                    self.current_gesture_idx += 1
+                    
+                    if self.current_gesture_idx >= len(GESTURE_ORDER):
+                        print("✅ Calibration completed!")
+                        return True
+                    else:
+                        print(f"📝 Move to next gesture: {self.get_current_gesture()}")
         
         return False
     
@@ -89,9 +96,12 @@ class CalibrationUI:
         gid = self.get_current_gesture()
         if gid:
             gvi = self.get_current_gesture_vi()
-            progress = f"{self.current_gesture_idx + 1}/{len(GESTURE_ORDER)}"
-            cv2.putText(frame, f"Gesture: {gid} - {gvi} ({progress})", (20, 80),
+            gesture_progress = f"{self.current_gesture_idx + 1}/{len(GESTURE_ORDER)}"
+            sample_progress = f"Sample {self.current_recording_idx + 1}/{self.recordings_per_gesture}"
+            
+            cv2.putText(frame, f"Gesture: {gid} - {gvi} ({gesture_progress})", (20, 80),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (74, 222, 128), 2)
+            cv2.putText(frame, sample_progress, (w - 250, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_CYAN, 2)
         
         # Recording status
         if self.is_recording:
@@ -114,7 +124,8 @@ class CalibrationUI:
         cv2.rectangle(frame, (10, h - 80), (w - 10, h - 10), (100, 100, 150), 1)
         cv2.putText(frame, "SPACE: Start/Stop recording  |  Q: Quit  |  S: Skip gesture", 
                    (20, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (150, 200, 255), 1)
-        cv2.putText(frame, f"Saved templates: {len(self.calibrator.templates)}", 
+        total_samples = sum(len(v) for v in self.calibrator.templates.values())
+        cv2.putText(frame, f"Saved gestures: {len(self.calibrator.templates)} ({total_samples} samples)", 
                    (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (150, 200, 255), 1)
     
     def handle_keypress(self, key: int, frame_idx: int) -> str:
@@ -127,7 +138,7 @@ class CalibrationUI:
         
         if key == ord(' '):
             # Spacebar: toggle recording
-            if self.is_recording:
+            if self.is_recording and (frame_idx - self.recording_started_at_frame > 5):
                 self.finish_recording()
                 return "stop_recording"
             else:
@@ -141,6 +152,8 @@ class CalibrationUI:
                 self.calibrator.current_buffer = []
                 self.is_recording = False
             
+            self.current_recording_idx = 0 # Reset sample count khi skip
+            
             self.current_gesture_idx += 1
             if self.current_gesture_idx >= len(GESTURE_ORDER):
                 return "finish_calibration"
@@ -152,8 +165,8 @@ class CalibrationUI:
         counts = self.calibrator.get_gesture_counts()
         lines = ["📊 Calibration Summary:"]
         for gid in GESTURE_ORDER:
-            count = counts.get(gid, 0)
+            num_samples = counts.get(gid, 0)
             gvi = VI_LABELS.get(gid, gid)
-            status = "✅" if count >= 10 else "⏳" if count > 0 else "❌"
-            lines.append(f"  {status} {gid:5s} ({gvi:20s}): {count} frames")
+            status = "✅" if num_samples >= self.recordings_per_gesture else "⏳" if num_samples > 0 else "❌"
+            lines.append(f"  {status} {gid:5s} ({gvi:20s}): {num_samples}/{self.recordings_per_gesture} samples")
         return "\n".join(lines)
