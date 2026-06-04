@@ -1,7 +1,7 @@
 import os
-os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "4"
 import torch
-torch.set_num_threads(1)
+torch.set_num_threads(4)
 
 import argparse
 import json
@@ -356,10 +356,10 @@ def main() -> None:
     parser.add_argument("--config",      default="", help="Path to gesture_config.json")
     parser.add_argument("--task-model",  default="tools/assets/hand_landmarker.task")
     parser.add_argument("--camera-id",   type=int,   default=0)
-    parser.add_argument("--camera-width",type=int,   default=640) #chiều rộng camera
-    parser.add_argument("--camera-height",type=int,  default=480) #chiều cao camera
-    parser.add_argument("--camera-fps",  type=int,   default=60) #FPS
-    parser.add_argument("--length",      type=int,   default=20) #chinh frame 
+    parser.add_argument("--camera-width",type=int,   default=700) #chiều rộng camera
+    parser.add_argument("--camera-height",type=int,  default=500) #chiều cao camera
+    parser.add_argument("--camera-fps",  type=int,   default=40) #FPS
+    parser.add_argument("--length",      type=int,   default=30) #chinh frame 
     parser.add_argument("--device",      default="auto", choices=["auto","cpu","cuda"])
     parser.add_argument("--det-conf",    type=float, default=0.6)
     parser.add_argument("--track-conf",  type=float, default=0.35)
@@ -405,12 +405,12 @@ def main() -> None:
 
     # ── Tìm file model & labels ──────────────────────────────────────────────
     model_candidates = [
-        Path("outputs_resume2/stgcn_best.pt"), Path("outputs_resume/stgcn_best.pt"),
+        Path("ST_GCN\Gan_nut\stgcn_best.pt"), Path("outputs_resume/stgcn_best.pt"),
         Path("outputs/outputs/stgcn_best.pt"),  Path("outputs/stgcn_best.pt"),
         Path("data/stgcn_best.pt"),
     ]
     labels_candidates = [
-        Path("outputs_resume2/labels.json"), Path("outputs_resume/labels.json"),
+        Path("ST_GCN\Gan_nut\labels.json"), Path("outputs_resume/labels.json"),
         Path("outputs/outputs/labels.json"),  Path("outputs/labels.json"),
         Path("data/labels.json"),
     ]
@@ -440,9 +440,10 @@ def main() -> None:
 
     in_channels = infer_in_channels_from_state(state)
     inferred_use_z, inferred_use_velocity, inferred_use_acceleration = infer_feature_config(in_channels)
-    use_z            = inferred_use_z            if args.use_z       is None else args.use_z
-    use_velocity     = inferred_use_velocity     if args.use_velocity is None else args.use_velocity
-    use_acceleration = inferred_use_acceleration
+    # Force 9-channel mode (z + velocity + acceleration)
+    use_z            = True
+    use_velocity     = True
+    use_acceleration = True
 
     edge_index = build_hand_edge_index()
     model      = STGCN(in_channels=in_channels, num_classes=len(labels), edge_index=edge_index)
