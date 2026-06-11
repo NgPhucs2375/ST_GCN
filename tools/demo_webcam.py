@@ -176,7 +176,7 @@ MOUSE_POS_EMA = None
 MUTEX_LAST = {}
 # Motion prediction for mouse follow
 MOTION_HISTORY = deque(maxlen=5)  # Track fingertip positions for velocity estimation
-BLUR_THRESHOLD = 100.0  # Laplacian variance threshold for blur detection
+BLUR_THRESHOLD = 50.0  # Laplacian variance threshold for blur detection
 FOLLOW_TOGGLE_FRAME = -999  # Track when follow was last toggled to debounce
 FOLLOW_TOGGLE_COOLDOWN = 10  # Frames to wait before accepting new toggle
 
